@@ -3,6 +3,25 @@ const mongoose = require('mongoose');
 const generateToken = require('../utils/generateToken');
 const { validationResult } = require('express-validator');
 
+// Normalize portal URL: remove any '/hrm' path segments and ensure final path includes subdomain
+const normalizePortalUrl = (rawUrl, subdomain) => {
+  if (!rawUrl) return null;
+  try {
+    const u = new URL(rawUrl);
+    let parts = u.pathname.split('/').filter(Boolean).filter(p => p.toLowerCase() !== 'hrm');
+    if (subdomain && (!parts.length || parts[parts.length - 1] !== subdomain)) {
+      parts.push(subdomain);
+    }
+    u.pathname = '/' + parts.join('/');
+    return u.toString().replace(/\/+$/, '');
+  } catch (e) {
+    // fallback string manipulation
+    let s = String(rawUrl).replace(/\/+hrm(\/+)?/gi, '/').replace(/\/+$/,'');
+    if (subdomain && !s.endsWith('/' + subdomain)) s = s + '/' + subdomain;
+    return s || null;
+  }
+};
+
 // Helper to get super admin models at runtime (ensures main DB connection is ready)
 const getMainModels = () => {
   return getSuperAdminModels();
@@ -104,9 +123,14 @@ exports.createTenant = async (req, res) => {
     }
 
     // Create tenant record in super admin database FIRST
+    // Normalize portal URL to remove any '/hrm' segment and ensure it ends with the subdomain
+    const providedPortal = req.body.portalUrl || req.body.portalBase || null;
+    const normalizedPortal = providedPortal ? normalizePortalUrl(providedPortal, subdomain.toLowerCase()) : null;
+
     tenant = await Tenant.create({
       name,
       subdomain: subdomain.toLowerCase(),
+      portalUrl: normalizedPortal,
       companyName,
       description,
       contactEmail,
@@ -240,6 +264,7 @@ exports.getPublicTenants = async (req, res) => {
       name: tenant.name,
       companyName: tenant.companyName,
       subdomain: tenant.subdomain,
+      portalUrl: tenant.portalUrl || null,
       status: tenant.subscription?.status || 'active',
       plan: tenant.subscription?.plan || 'free',
       description: tenant.description || '',
@@ -304,6 +329,11 @@ exports.createAdmin = async (req, res) => {
 
     const { Tenant } = getMainModels();
     
+    // Basic validation
+    if (!name || !email) {
+      return res.status(400).json({ message: 'Admin name and email are required' });
+    }
+
     // Find tenant
     let tenant = await Tenant.findById(tenantId);
     if (!tenant) {
@@ -324,24 +354,50 @@ exports.createAdmin = async (req, res) => {
   const tenantConnection = await connectTenantDB(tenant._id.toString(), tenant.companyName);
   const models = await getTenantModels(tenantConnection);
 
-    // Create admin employee
-    const adminEmployee = await models.Employee.create({
-      name,
-      email,
-      department: 'Administration',
-      position: 'Administrator',
-      salary: 0,
-      employmentType: 'full-time'
-    });
+    // Create admin employee and user with defensive error handling
+    let adminEmployee;
+    let adminUser;
+    try {
+      adminEmployee = await models.Employee.create({
+        name,
+        email,
+        department: 'Administration',
+        position: 'Administrator',
+        salary: 0,
+        employmentType: 'full-time',
+        employeeId: `EMP${new Date().getFullYear()}${Math.floor(Math.random() * 9000) + 1000}`
+      });
+    } catch (err) {
+      console.error('Error creating admin employee:', err);
+      return res.status(500).json({ message: 'Failed to create admin employee', error: err.message });
+    }
 
-    // Create admin user
-    const adminUser = await models.User.create({
-      email,
-      password: password || 'admin123',
-      role: 'admin',
-      employee: adminEmployee._id,
-      tenant: tenant._id
-    });
+    try {
+      adminUser = await models.User.create({
+        email,
+        password: password || 'admin123',
+        role: 'admin',
+        employee: adminEmployee._id,
+        tenant: tenant._id,
+        isActive: true
+      });
+    } catch (err) {
+      console.error('Error creating admin user:', err);
+      // attempt cleanup of created employee if user creation fails
+      try {
+        if (adminEmployee && adminEmployee._id) {
+          await models.Employee.findByIdAndDelete(adminEmployee._id);
+        }
+      } catch (cleanupErr) {
+        console.error('Failed to cleanup orphan admin employee:', cleanupErr);
+      }
+
+      if (err.code === 11000 || (err.message && err.message.toLowerCase().includes('duplicate'))) {
+        return res.status(409).json({ message: 'Admin user with this email already exists' });
+      }
+
+      return res.status(500).json({ message: 'Failed to create admin user', error: err.message });
+    }
 
     res.status(201).json({
       _id: adminUser._id,
@@ -480,6 +536,10 @@ exports.updateTenant = async (req, res) => {
     // Update fields
     Object.assign(tenant, {
       name: name || tenant.name,
+      // allow updating portalUrl explicitly (normalize to remove '/hrm' if present)
+      portalUrl: req.body.portalUrl !== undefined
+        ? (req.body.portalUrl ? normalizePortalUrl(req.body.portalUrl, (req.body.subdomain || tenant.subdomain)) : null)
+        : tenant.portalUrl,
       companyName: companyName || tenant.companyName,
       description: description || tenant.description,
       contactEmail: contactEmail || tenant.contactEmail,
