@@ -1,0 +1,199 @@
+const DefaultEmployee = require('../models/Employee');
+const DefaultAttendance = require('../models/Attendance');
+const DefaultLeave = require('../models/Leave');
+const DefaultPayroll = require('../models/Payroll');
+const DefaultUser = require('../models/User'); // ✅ Added this line
+const moment = require('moment');
+
+const mongoose = require('mongoose');
+
+const resolveModel = (req, name, defaultSchema) => {
+  if (req.models && req.models[name]) return req.models[name];
+  // defaultSchema may already be a model or a schema
+  const schema = defaultSchema && defaultSchema.schema ? defaultSchema.schema : defaultSchema;
+  if (mongoose.models && mongoose.models[name]) return mongoose.models[name];
+  return mongoose.model(name, schema);
+};
+
+// @desc    Get admin dashboard stats
+// @route   GET /api/dashboard/admin
+// @access  Private/Admin
+exports.getAdminDashboard = async (req, res) => {
+  try {
+    const currentMonth = moment().month() + 1;
+    const currentYear = moment().year();
+
+  // Resolve models (tenant-scoped if available)
+  const EmployeeModel = resolveModel(req, 'Employee', DefaultEmployee);
+  const AttendanceModel = resolveModel(req, 'Attendance', DefaultAttendance);
+  const LeaveModel = resolveModel(req, 'Leave', DefaultLeave);
+  const PayrollModel = resolveModel(req, 'Payroll', DefaultPayroll);
+  const UserModel = resolveModel(req, 'User', DefaultUser);
+
+  // Total employees
+  const totalEmployees = await EmployeeModel.countDocuments({ isActive: true });
+    
+    // Today's attendance
+    const today = moment().startOf('day');
+  const todaysAttendance = await AttendanceModel.find({
+      date: {
+        $gte: today.toDate(),
+        $lte: moment(today).endOf('day').toDate()
+      }
+    }).populate('employee', 'name department');
+
+    const presentToday = todaysAttendance.filter(a => a.status === 'present').length;
+    const checkedInToday = todaysAttendance.length;
+
+    // Active sessions (optional if your User schema has loginSession)
+    let activeSessions = 0;
+    if (UserModel.schema && UserModel.schema.path('loginSession')) {
+      activeSessions = await UserModel.countDocuments({
+        'loginSession.isValid': true,
+        'loginSession.expires': { $gt: new Date() }
+      });
+    }
+
+    // Pending leave requests
+  const pendingLeaves = await LeaveModel.countDocuments({ status: 'pending' });
+
+    // Monthly payroll summary
+  const monthlyPayroll = await PayrollModel.aggregate([
+      {
+        $match: {
+          month: currentMonth,
+          year: currentYear
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          totalSalary: { $sum: '$netSalary' },
+          paidEmployees: { $sum: 1 }
+        }
+      }
+    ]);
+
+    // Department-wise employee count
+  const departmentStats = await EmployeeModel.aggregate([
+      { $match: { isActive: true } },
+      {
+        $group: {
+          _id: '$department',
+          count: { $sum: 1 }
+        }
+      }
+    ]);
+
+    // Recent leaves
+    const recentLeaves = await LeaveModel.find({ status: 'pending' })
+      .populate('employee', 'name department')
+      .sort({ createdAt: -1 })
+      .limit(5);
+
+    res.json({
+      totalEmployees,
+      presentToday,
+      checkedInToday,
+      activeSessions,
+      pendingLeaves,
+      totalSalary: monthlyPayroll[0]?.totalSalary || 0,
+      paidEmployees: monthlyPayroll[0]?.paidEmployees || 0,
+      departmentStats,
+      recentLeaves
+    });
+  } catch (error) {
+    console.error('Get admin dashboard error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// @desc    Get employee dashboard stats
+// @route   GET /api/dashboard/employee
+// @access  Private
+exports.getEmployeeDashboard = async (req, res) => {
+  try {
+    const currentMonth = moment().month() + 1;
+    const currentYear = moment().year();
+    const employeeId = req.user.employee._id;
+    // Resolve tenant-aware models (fall back to default models)
+    const AttendanceModel = resolveModel(req, 'Attendance', DefaultAttendance);
+    const LeaveModel = resolveModel(req, 'Leave', DefaultLeave);
+    const PayrollModel = resolveModel(req, 'Payroll', DefaultPayroll);
+
+    // Today's attendance
+    const today = moment().startOf('day');
+    const todaysAttendance = await AttendanceModel.findOne({
+      employee: employeeId,
+      date: {
+        $gte: today.toDate(),
+        $lte: moment(today).endOf('day').toDate()
+      }
+    });
+
+    // Monthly attendance summary
+    const startDate = moment().startOf('month').toDate();
+    const endDate = moment().endOf('month').toDate();
+
+    const monthlyAttendance = await AttendanceModel.find({
+      employee: employeeId,
+      date: { $gte: startDate, $lte: endDate }
+    });
+
+    const presentDays = monthlyAttendance.filter(a => a.status === 'present').length;
+    const halfDays = monthlyAttendance.filter(a => a.status === 'half-day').length;
+    const totalWorkingHours = monthlyAttendance.reduce((sum, a) => sum + (a.workingHours || 0), 0);
+
+    // Leave stats
+    const employeeObjectId = mongoose.isValidObjectId(employeeId)
+      ? new mongoose.Types.ObjectId(employeeId)
+      : employeeId;
+
+    const leaveStats = await LeaveModel.aggregate([
+      {
+        $match: {
+          employee: employeeObjectId,
+          startDate: { $gte: new Date(`${currentYear}-01-01`) }
+        }
+      },
+      {
+        $group: {
+          _id: '$status',
+          totalDays: { $sum: '$totalDays' }
+        }
+      }
+    ]);
+
+    // Current month payroll
+    const currentPayroll = await PayrollModel.findOne({
+      employee: employeeId,
+      month: currentMonth,
+      year: currentYear
+    });
+
+    // Upcoming approved leaves
+    const upcomingLeaves = await LeaveModel.find({
+      employee: employeeId,
+      status: 'approved',
+      startDate: { $gte: new Date() }
+    })
+      .sort({ startDate: 1 })
+      .limit(3);
+
+    res.json({
+      todaysAttendance,
+      monthlyStats: {
+        presentDays,
+        halfDays,
+        totalWorkingHours: totalWorkingHours.toFixed(2),
+        workingDays: moment().date() // days passed in month
+      },
+      leaveStats,
+      currentPayroll,
+      upcomingLeaves
+    });
+  } catch (error) {
+    console.error('Get employee dashboard error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};

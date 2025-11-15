@@ -1,0 +1,151 @@
+const Leave = require('../models/Leave');
+const { validationResult } = require('express-validator');
+const moment = require('moment');
+
+// @desc    Apply for leave
+// @route   POST /api/leaves
+// @access  Private
+exports.applyForLeave = async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const { leaveType, startDate, endDate, reason } = req.body;
+
+    // Check if end date is after start date
+    if (moment(endDate).isBefore(moment(startDate))) {
+      return res.status(400).json({ message: 'End date must be after start date' });
+    }
+
+    const leave = await Leave.create({
+      employee: req.user.employee._id,
+      leaveType,
+      startDate,
+      endDate,
+      reason
+    });
+
+    await leave.populate('employee', 'name email department');
+
+    res.status(201).json(leave);
+  } catch (error) {
+    console.error('Apply for leave error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// @desc    Get my leaves
+// @route   GET /api/leaves/my-leaves
+// @access  Private
+exports.getMyLeaves = async (req, res) => {
+  try {
+    const leaves = await Leave.find({ employee: req.user.employee._id })
+      .populate('approvedBy', 'name')
+      .sort({ createdAt: -1 });
+
+    res.json(leaves);
+  } catch (error) {
+    console.error('Get my leaves error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// @desc    Get all leaves (Admin)
+// @route   GET /api/leaves
+// @access  Private/Admin
+exports.getAllLeaves = async (req, res) => {
+  try {
+    const { status } = req.query;
+    let filter = {};
+
+    if (status) {
+      filter.status = status;
+    }
+
+    const leaves = await Leave.find(filter)
+      .populate('employee', 'name email department position')
+      .populate('approvedBy', 'name')
+      .sort({ createdAt: -1 });
+
+    res.json(leaves);
+  } catch (error) {
+    console.error('Get all leaves error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// @desc    Update leave status
+// @route   PUT /api/leaves/:id/status
+// @access  Private/Admin
+exports.updateLeaveStatus = async (req, res) => {
+  try {
+    const { status } = req.body;
+
+    if (!['approved', 'rejected'].includes(status)) {
+      return res.status(400).json({ message: 'Invalid status' });
+    }
+
+    const leave = await Leave.findById(req.params.id);
+
+    if (!leave) {
+      return res.status(404).json({ message: 'Leave not found' });
+    }
+
+    leave.status = status;
+    leave.approvedBy = req.user.employee._id;
+    leave.approvedAt = new Date();
+
+    await leave.save();
+    await leave.populate('employee', 'name email department');
+    await leave.populate('approvedBy', 'name');
+
+    res.json(leave);
+  } catch (error) {
+    console.error('Update leave status error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// @desc    Get leave statistics
+// @route   GET /api/leaves/stats
+// @access  Private
+exports.getLeaveStats = async (req, res) => {
+  try {
+    const currentYear = moment().year();
+
+    const stats = await Leave.aggregate([
+      {
+        $match: {
+          employee: req.user.employee._id,
+          startDate: {
+            $gte: new Date(`${currentYear}-01-01`),
+            $lte: new Date(`${currentYear}-12-31`)
+          }
+        }
+      },
+      {
+        $group: {
+          _id: '$leaveType',
+          totalDays: { $sum: '$totalDays' },
+          approvedDays: {
+            $sum: {
+              $cond: [{ $eq: ['$status', 'approved'] }, '$totalDays', 0]
+            }
+          },
+          pendingDays: {
+            $sum: {
+              $cond: [{ $eq: ['$status', 'pending'] }, '$totalDays', 0]
+            }
+          }
+        }
+      }
+    ]);
+
+    res.json(stats);
+  } catch (error) {
+    console.error('Get leave stats error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
