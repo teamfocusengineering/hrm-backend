@@ -31,7 +31,7 @@ const startServer = async () => {
       const allowedOrigins = [
         'https://kb-hrs-software.vercel.app',
         'https://hrm.focusengineeringapp.com',
-        'hrm-superadmin.focusengineeringapp.com',
+        'https://hrm-superadmin.focusengineeringapp.com',
         'https://hrm-superadmin.vercel.app',
         'https://hrm-tenant.pages.dev',
         'https://hrm-super-admin.pages.dev',
