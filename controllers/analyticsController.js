@@ -358,3 +358,370 @@ exports.getDashboardAnalytics = async (req, res) => {
     });
   }
 };
+
+const moment = require('moment');
+
+// Helper to resolve models
+const resolveModel = (req, name, defaultSchema) => {
+  if (req.models && req.models[name]) return req.models[name];
+  const schema = defaultSchema && defaultSchema.schema ? defaultSchema.schema : defaultSchema;
+  if (mongoose.models && mongoose.models[name]) return mongoose.models[name];
+  return mongoose.model(name, schema);
+};
+
+// @desc    Get comprehensive analytics for dashboard
+// @route   GET /api/analytics/dashboard
+// @access  Private/Admin
+exports.getAnalyticsDashboard = async (req, res) => {
+  try {
+    const Employee = resolveModel(req, 'Employee', require('../models/Employee'));
+    const Attendance = resolveModel(req, 'Attendance', require('../models/Attendance'));
+    const Project = resolveModel(req, 'Project', require('../models/Project'));
+    const Task = resolveModel(req, 'Task', require('../models/Task'));
+
+    // 1. EMPLOYEE ATTENDANCE RATE ANALYTICS
+    const totalEmployees = await Employee.countDocuments({ isActive: true });
+    
+    // Monthly attendance trend (last 6 months)
+    const sixMonthsAgo = moment().subtract(5, 'months').startOf('month');
+    const monthlyAttendance = await Attendance.aggregate([
+      {
+        $match: {
+          date: {
+            $gte: sixMonthsAgo.toDate(),
+            $lte: moment().endOf('month').toDate()
+          }
+        }
+      },
+      {
+        $group: {
+          _id: {
+            month: { $month: '$date' },
+            year: { $year: '$date' }
+          },
+          presentCount: {
+            $sum: {
+              $cond: [
+                { $in: ['$status', ['present', 'present-with-permission']] },
+                1, 0
+              ]
+            }
+          },
+          totalCount: { $sum: 1 },
+          uniqueEmployees: { $addToSet: '$employee' }
+        }
+      },
+      { $sort: { '_id.year': 1, '_id.month': 1 } }
+    ]);
+
+    // Calculate monthly attendance percentage relative to tenant total employees
+    const attendanceRates = monthlyAttendance.map(item => {
+      const monthYear = `${item._id.year}-${item._id.month.toString().padStart(2, '0')}`;
+      const monthName = moment(`${item._id.year}-${item._id.month}`, 'YYYY-M').format('MMM YYYY');
+      const daysInMonth = moment(`${item._id.year}-${item._id.month}`, 'YYYY-M').daysInMonth();
+      const presentCount = item.presentCount || 0;
+      const attendanceRate = totalEmployees > 0 ? (presentCount / (totalEmployees * daysInMonth)) * 100 : 0;
+
+      return {
+        period: monthYear,
+        label: monthName,
+        attendanceRate: Math.round(attendanceRate * 100) / 100,
+        presentCount: presentCount,
+        totalEmployees: totalEmployees
+      };
+    });
+
+    // Current month attendance rate
+    const currentMonthStart = moment().startOf('month');
+    const currentMonthEnd = moment().endOf('month');
+    const currentMonthAttendance = await Attendance.aggregate([
+      {
+        $match: {
+          date: {
+            $gte: currentMonthStart.toDate(),
+            $lte: currentMonthEnd.toDate()
+          }
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          presentCount: {
+            $sum: {
+              $cond: [
+                { $in: ['$status', ['present', 'present-with-permission']] },
+                1, 0
+              ]
+            }
+          },
+          uniqueEmployees: { $addToSet: '$employee' }
+        }
+      }
+    ]);
+
+    // Compute current month attendance percentage relative to total employees and days elapsed
+    const daysSoFar = moment().date(); // day of month (1..31)
+    const currentMonthPresent = (currentMonthAttendance.length > 0 && currentMonthAttendance[0].presentCount) ? currentMonthAttendance[0].presentCount : 0;
+    const currentMonthRate = totalEmployees > 0 && daysSoFar > 0 ?
+      (currentMonthPresent / (totalEmployees * daysSoFar)) * 100 : 0;
+
+    // 1.a DAILY ATTENDANCE DATA (Last 30 days)
+    const thirtyDaysAgo = moment().subtract(29, 'days').startOf('day');
+    const dailyAttendance = await Attendance.aggregate([
+      {
+        $match: {
+          date: {
+            $gte: thirtyDaysAgo.toDate(),
+            $lte: moment().endOf('day').toDate()
+          }
+        }
+      },
+      {
+        $group: {
+          _id: {
+            date: { $dateToString: { format: '%Y-%m-%d', date: '$date' } }
+          },
+          presentCount: {
+            $sum: {
+              $cond: [
+                { $in: ['$status', ['present', 'present-with-permission']] },
+                1, 0
+              ]
+            }
+          },
+          uniqueEmployees: { $addToSet: '$employee' }
+        }
+      },
+      { $sort: { '_id.date': 1 } }
+    ]);
+
+    // Format daily data
+    const dailyData = [];
+    for (let i = 29; i >= 0; i--) {
+      const date = moment().subtract(i, 'days').format('YYYY-MM-DD');
+      const dayName = moment().subtract(i, 'days').format('DD MMM');
+      const dayData = dailyAttendance.find(d => d._id.date === date);
+      
+      const presentCount = dayData?.presentCount || 0;
+      // Use tenant totalEmployees as the denominator for daily attendance percentage
+      const employeeCount = totalEmployees;
+      const attendanceRate = employeeCount > 0 ? (presentCount / employeeCount) * 100 : 0;
+
+      dailyData.push({
+        date: dayName,
+        fullDate: date,
+        presentCount,
+        totalEmployees: employeeCount,
+        attendanceRate: Math.round(attendanceRate * 100) / 100
+      });
+    }
+
+    // Current day data (today)
+    const todayData = dailyData[dailyData.length - 1] || {};
+
+    // 2. PROJECT TASK PERFORMANCE ANALYTICS
+    const projects = await Project.find({ isActive: true })
+      .populate('assignedEmployees', 'name')
+      .select('name progress status startDate endDate assignedEmployees');
+
+    const projectPerformance = await Promise.all(
+      projects.map(async (project) => {
+        const taskStats = await Task.aggregate([
+          { $match: { project: project._id } },
+          {
+            $group: {
+              _id: '$status',
+              count: { $sum: 1 },
+              totalHours: { $sum: '$estimatedHours' }
+            }
+          }
+        ]);
+
+        const statusCounts = {
+          todo: 0,
+          'in-progress': 0,
+          review: 0,
+          done: 0
+        };
+
+        taskStats.forEach(stat => {
+          statusCounts[stat._id] = stat.count;
+        });
+
+        const totalTasks = Object.values(statusCounts).reduce((sum, count) => sum + count, 0);
+        const completionRate = totalTasks > 0 ? (statusCounts.done / totalTasks) * 100 : 0;
+
+        // Project health calculation
+        const now = new Date();
+        const totalDuration = project.endDate - project.startDate;
+        const elapsedDuration = now - project.startDate;
+        const timeProgress = totalDuration > 0 ? (elapsedDuration / totalDuration) * 100 : 0;
+        
+        const healthScore = timeProgress > 0 ? 
+          Math.min((project.progress / timeProgress) * 100, 100) : 
+          project.progress;
+
+        return {
+          projectId: project._id,
+          name: project.name,
+          progress: project.progress,
+          status: project.status,
+          assignedEmployees: project.assignedEmployees.length,
+          taskStats: statusCounts,
+          totalTasks,
+          completionRate: Math.round(completionRate * 100) / 100,
+          healthScore: Math.round(healthScore * 100) / 100,
+          isOnTrack: healthScore >= 80 ? 'good' : healthScore >= 60 ? 'warning' : 'critical'
+        };
+      })
+    );
+
+    // Overall project statistics
+    const totalProjects = projectPerformance.length;
+    const avgProjectCompletion = totalProjects > 0 ? 
+      projectPerformance.reduce((sum, project) => sum + project.completionRate, 0) / totalProjects : 0;
+    
+    const onTrackProjects = projectPerformance.filter(p => p.isOnTrack === 'good').length;
+
+    // 3. DEPARTMENT-WISE EMPLOYEE ANALYTICS
+    const departmentStats = await Employee.aggregate([
+      { $match: { isActive: true } },
+      {
+        $group: {
+          _id: '$department',
+          employeeCount: { $sum: 1 },
+          avgSalary: { $avg: '$salary' },
+          employees: { $push: '$$ROOT' }
+        }
+      },
+      { $sort: { employeeCount: -1 } }
+    ]);
+
+    const departmentAnalytics = await Promise.all(
+      departmentStats.map(async (dept) => {
+        const employeeIds = dept.employees.map(emp => emp._id);
+        
+        // Get recent attendance for this department (last 30 days)
+        const thirtyDaysAgo = moment().subtract(30, 'days').toDate();
+        const attendanceStats = await Attendance.aggregate([
+          {
+            $match: {
+              employee: { $in: employeeIds },
+              date: { $gte: thirtyDaysAgo }
+            }
+          },
+          {
+            $group: {
+              _id: '$employee',
+              presentDays: {
+                $sum: {
+                  $cond: [
+                    { $in: ['$status', ['present', 'present-with-permission']] },
+                    1, 0
+                  ]
+                }
+              },
+              totalDays: { $sum: 1 }
+            }
+          }
+        ]);
+
+        // Calculate average attendance rate for department
+        let totalAttendanceRate = 0;
+        let employeesWithAttendance = 0;
+
+        attendanceStats.forEach(stat => {
+          if (stat.totalDays > 0) {
+            const employeeRate = (stat.presentDays / stat.totalDays) * 100;
+            totalAttendanceRate += employeeRate;
+            employeesWithAttendance++;
+          }
+        });
+
+        const avgAttendanceRate = employeesWithAttendance > 0 ? 
+          totalAttendanceRate / employeesWithAttendance : 0;
+
+        // Gender distribution
+        const genderDistribution = {
+          male: dept.employees.filter(emp => emp.gender === 'male').length,
+          female: dept.employees.filter(emp => emp.gender === 'female').length,
+          other: dept.employees.filter(emp => emp.gender === 'other' || !emp.gender).length
+        };
+
+        return {
+          department: dept._id,
+          employeeCount: dept.employeeCount,
+          avgSalary: Math.round(dept.avgSalary),
+          avgAttendanceRate: Math.round(avgAttendanceRate * 100) / 100,
+          genderDistribution,
+          teamStrength: dept.employeeCount < 5 ? 'small' : 
+                       dept.employeeCount < 15 ? 'medium' : 'large'
+        };
+      })
+    );
+
+    // Overall company statistics
+    const overallAvgSalary = totalEmployees > 0 ? 
+      departmentAnalytics.reduce((sum, dept) => sum + (dept.avgSalary * dept.employeeCount), 0) / totalEmployees : 0;
+
+    res.json({
+      success: true,
+      data: {
+        // Attendance Analytics
+        attendance: {
+          currentRate: todayData.attendanceRate || Math.round(currentMonthRate * 100) / 100,
+          monthlyTrend: attendanceRates,
+          dailyData: dailyData,
+          today: todayData,
+          totalEmployees,
+          summary: {
+            excellent: attendanceRates.filter(r => r.attendanceRate >= 90).length,
+            good: attendanceRates.filter(r => r.attendanceRate >= 75 && r.attendanceRate < 90).length,
+            needsImprovement: attendanceRates.filter(r => r.attendanceRate < 75).length
+          }
+        },
+
+        // Project Performance Analytics
+        projects: {
+          totalProjects,
+          avgCompletionRate: Math.round(avgProjectCompletion * 100) / 100,
+          onTrackProjects,
+          projectPerformance: projectPerformance.slice(0, 10), // Top 10 projects
+          performanceSummary: {
+            good: projectPerformance.filter(p => p.isOnTrack === 'good').length,
+            warning: projectPerformance.filter(p => p.isOnTrack === 'warning').length,
+            critical: projectPerformance.filter(p => p.isOnTrack === 'critical').length
+          }
+        },
+        
+        // Department Analytics
+        departments: {
+          totalDepartments: departmentAnalytics.length,
+          overallAvgSalary: Math.round(overallAvgSalary),
+          departmentAnalytics: departmentAnalytics,
+          largestDepartment: departmentAnalytics[0] || null,
+          departmentDistribution: departmentAnalytics.map(dept => ({
+            name: dept.department,
+            value: dept.employeeCount,
+            attendanceRate: dept.avgAttendanceRate
+          }))
+        },
+        
+        // Quick Stats for Cards
+        quickStats: {
+          totalEmployees,
+          totalProjects,
+          avgAttendance: Math.round(currentMonthRate * 100) / 100,
+          onTrackProjects
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Analytics dashboard error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to load analytics dashboard'
+    });
+  }
+};
+

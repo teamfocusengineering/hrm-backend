@@ -5,6 +5,7 @@ const {
   getEmployees,
   getEmployee,
   updateEmployee,
+  getEmployeesDebug,
   deleteEmployee,
   getMyProfile,
   updateMyProfile
@@ -31,6 +32,7 @@ router.post('/',
 );
 
 router.get('/', authorize('admin'), getEmployees);
+router.get('/debug-counts', authorize('admin'), getEmployeesDebug);
 router.delete('/:id', authorize('admin'), deleteEmployee);
 router.put('/:id', authorize('admin'), updateEmployee);
 router.get('/:id', getEmployee);

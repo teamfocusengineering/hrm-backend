@@ -93,20 +93,94 @@ exports.createEmployee = async (req, res) => {
 // @access  Private/Admin
 exports.getEmployees = async (req, res) => {
   try {
-    const Employee = req.models.Employee;
-    const User = req.models.User;
+    const Employee = req.models?.Employee;
+    const User = req.models?.User;
 
-    const filter = { isActive: true };
-    // If tenant context is available and Employee has tenant field, scope queries
-    if (req.tenant && req.tenant._id) {
-      filter.tenant = req.tenant._id;
+    // Default: only active employees. Allow overriding with query param `includeInactive=true`.
+    const filter = {};
+    const includeInactive = req.query?.includeInactive === 'true';
+    if (!includeInactive) {
+      filter.isActive = true;
     }
 
-    const employees = await Employee.find(filter)
-      .populate('user', 'role isActive lastLogin')
-      .select('-__v');
+    // We'll collect results from tenant DB (req.models) and optionally from main DB
+    let tenantEmployees = [];
+    let mainEmployees = [];
 
-    res.json(employees);
+    // Tenant-scoped query: run if tenant models available
+    if (req.models && Employee) {
+      // When using tenant-specific connection, the tenant DB already contains only
+      // that tenant's documents. Adding a `tenant` field filter here can accidentally
+      // exclude valid tenant DB records that don't have a `tenant` field set
+      // (legacy or migrated records). So only apply the active/inactive filter.
+      const tenantFilter = { ...filter };
+      tenantEmployees = await Employee.find(tenantFilter)
+        .populate('user', 'role isActive lastLogin')
+        .select('-__v');
+    }
+
+    // Only query main DB when explicitly requested via query param `includeLegacy=true`
+    const includeLegacy = req.query?.includeLegacy === 'true';
+    if (includeLegacy) {
+      try {
+        const mainConn = require('../config/db').mainDB();
+        console.log('getEmployees -> includeLegacy=true, mainConn present:', !!mainConn, 'tenant:', req.tenant?._id || 'none');
+        if (mainConn && typeof mainConn.modelNames === 'function') {
+          try {
+            console.log('getEmployees -> mainConn.models:', mainConn.modelNames());
+          } catch (e) {
+            console.log('getEmployees -> could not list mainConn.modelNames:', e && e.message ? e.message : e);
+          }
+        }
+        if (mainConn) {
+          const MainEmployee = mainConn.models && mainConn.models.Employee
+            ? mainConn.models.Employee
+            : mainConn.model('Employee', require('../models/Employee'));
+
+          const mainFilter = { ...filter };
+          if (req.tenant && req.tenant._id) {
+            // include documents that either belong to tenant or missing tenant
+            mainFilter.$or = [
+              { tenant: req.tenant._id },
+              { tenant: { $exists: false } },
+              { tenant: null }
+            ];
+          }
+
+          try {
+            const mainCount = await MainEmployee.countDocuments(mainFilter);
+            console.log('getEmployees -> mainFilter count:', mainCount);
+          } catch (countErr) {
+            console.log('getEmployees -> countDocuments failed on main DB:', countErr && countErr.message ? countErr.message : countErr);
+          }
+
+          mainEmployees = await MainEmployee.find(mainFilter).select('-__v');
+        }
+      } catch (err) {
+        console.error('Error querying main DB for employees:', err && err.message ? err.message : err);
+      }
+    }
+
+    // If legacy inclusion requested, combine and dedupe; otherwise return tenant results only
+    if (includeLegacy) {
+      const combinedMap = new Map();
+      const pushToMap = (emp) => {
+        if (!emp) return;
+        const id = String(emp._id || emp.id || emp.employeeId || JSON.stringify(emp));
+        if (!combinedMap.has(id)) combinedMap.set(id, emp);
+      };
+
+      tenantEmployees.forEach(pushToMap);
+      mainEmployees.forEach(pushToMap);
+
+      const employees = Array.from(combinedMap.values());
+
+      console.log(`getEmployees -> tenant: ${req.tenant?._id || 'none'}, tenantCount: ${tenantEmployees.length}, mainCount: ${mainEmployees.length}, combined: ${employees.length}`);
+      return res.json(employees);
+    }
+
+    console.log(`getEmployees -> tenant: ${req.tenant?._id || 'none'}, tenantCount: ${tenantEmployees.length}`);
+    return res.json(tenantEmployees);
   } catch (error) {
     console.error('Get employees error:', error);
     res.status(500).json({ message: 'Server error' });
@@ -140,11 +214,6 @@ exports.getEmployee = async (req, res) => {
 
     if (!employee) {
       return res.status(404).json({ message: 'Employee not found' });
-    }
-
-    // If employee belongs to a different tenant, block access
-    if (employee.tenant && req.tenant && employee.tenant.toString() !== req.tenant._id.toString()) {
-      return res.status(403).json({ message: 'Access denied' });
     }
 
     res.json(employee);
@@ -312,6 +381,64 @@ exports.updateMyProfile = async (req, res) => {
     res.json(updatedEmployee);
   } catch (error) {
     console.error('Update my profile error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// @desc    Debug: return tenant/main counts and samples for employees
+// @route   GET /api/employees/debug-counts
+// @access  Private/Admin
+exports.getEmployeesDebug = async (req, res) => {
+  try {
+    const Employee = req.models?.Employee;
+    const result = {
+      tenant: req.tenant?._id || null,
+      tenantCount: null,
+      mainCount: null,
+      tenantSample: [],
+      mainSample: []
+    };
+
+    // Tenant counts/sample
+    if (Employee) {
+      try {
+        result.tenantCount = await Employee.countDocuments({});
+        result.tenantSample = await Employee.find({}).limit(10).select('-__v').lean();
+      } catch (e) {
+        result.tenantCount = `error: ${e.message}`;
+      }
+    }
+
+    // Main DB counts/sample
+    try {
+      const mainConn = require('../config/db').mainDB();
+      if (mainConn) {
+        const MainEmployee = mainConn.models && mainConn.models.Employee
+          ? mainConn.models.Employee
+          : mainConn.model('Employee', require('../models/Employee'));
+
+        const mainFilter = {};
+        // if tenant present, also include docs missing tenant or matching tenant
+        if (req.tenant && req.tenant._id) {
+          mainFilter.$or = [
+            { tenant: req.tenant._id },
+            { tenant: { $exists: false } },
+            { tenant: null }
+          ];
+        }
+
+        result.mainCount = await MainEmployee.countDocuments(mainFilter);
+        result.mainSample = await MainEmployee.find(mainFilter).limit(10).select('-__v').lean();
+      } else {
+        result.mainCount = 'no-main-conn';
+      }
+    } catch (e) {
+      result.mainCount = `error: ${e.message}`;
+    }
+
+    return res.json(result);
+  } catch (error) {
+    console.error('Get employees debug error:', error);
     res.status(500).json({ message: 'Server error' });
   }
 };

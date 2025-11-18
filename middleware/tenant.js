@@ -102,10 +102,15 @@ exports.detectTenant = async (req, res, next) => {
 
         console.log(`🔗 Connected to tenant database: ${tenant.companyName}`);
       } else {
-        return res.status(404).json({
-          message: 'Company not found or inactive',
-          subdomain: subdomain
-        });
+        // If a subdomain/header was provided but no tenant was found, don't hard-fail here.
+        // Clients (install hooks, public pages) may send stale or exploratory headers —
+        // allow the request to continue without tenant context and let downstream
+        // authentication/authorization decide how to handle it.
+        console.warn(`Tenant detection: subdomain provided but not found or inactive -> '${subdomain}'. Continuing without tenant context.`);
+        // ensure no tenant properties are set on the request
+        req.tenant = undefined;
+        req.tenantId = undefined;
+        req.tenantSubdomain = undefined;
       }
     }
 

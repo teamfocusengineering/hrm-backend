@@ -511,14 +511,24 @@ exports.deleteTask = async (req, res) => {
     const models = getModels(req);
     const { Task } = models;
 
-    const task = await Task.findOneAndUpdate(
-      {
-        _id: req.params.id,
-        tenant: req.tenant._id
-      },
-      { isActive: false },
-      { new: true }
-    );
+    // Support optional hard delete via query param ?hard=true
+    const hard = String(req.query.hard || '').toLowerCase() === 'true';
+
+    let task;
+    if (hard) {
+      // permanently remove the document
+      task = await Task.findOneAndDelete({ _id: req.params.id, tenant: req.tenant._id });
+    } else {
+      // soft delete
+      task = await Task.findOneAndUpdate(
+        {
+          _id: req.params.id,
+          tenant: req.tenant._id
+        },
+        { isActive: false },
+        { new: true }
+      );
+    }
 
     if (!task) {
       return res.status(404).json({
