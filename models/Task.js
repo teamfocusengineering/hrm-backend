@@ -1,5 +1,30 @@
 const mongoose = require('mongoose');
 
+const taskUpdateSchema = new mongoose.Schema({
+  date: {
+    type: Date,
+    default: Date.now
+  },
+  progress: {
+    type: Number,
+    required: true,
+    min: 0,
+    max: 100
+  },
+  note: {
+    type: String,
+    required: true,
+    trim: true
+  },
+  userId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true
+  }
+}, {
+  timestamps: true
+});
+
 const taskSchema = new mongoose.Schema({
   taskId: {
     type: String,
@@ -47,6 +72,22 @@ const taskSchema = new mongoose.Schema({
     type: Number,
     min: 0,
     default: 0
+  },
+  // Overall progress percentage (0-100)
+  progress: {
+    type: Number,
+    min: 0,
+    max: 100,
+    default: 0
+  },
+  // Progress updates history
+  updates: {
+    type: [taskUpdateSchema],
+    default: []
+  },
+  // Last progress update timestamp
+  lastUpdated: {
+    type: Date
   },
   tenant: {
     type: mongoose.Schema.Types.ObjectId,

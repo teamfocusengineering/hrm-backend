@@ -1,6 +1,20 @@
-const Leave = require('../models/Leave');
+const LeaveExport = require('../models/Leave');
 const { validationResult } = require('express-validator');
 const moment = require('moment');
+const mongoose = require('mongoose');
+
+// Resolve the Leave model in a tenant-aware manner. Some modules export a Schema
+// (for tenant DB registration) while others expect a Model. Use `req.models` when
+// available (set by tenant middleware), otherwise register/retrieve the model
+// on the default mongoose connection.
+const resolveLeaveModel = (req) => {
+  if (req && req.models && req.models.Leave) return req.models.Leave;
+  if (LeaveExport && typeof LeaveExport.create === 'function') return LeaveExport;
+
+  const schema = LeaveExport && LeaveExport.schema ? LeaveExport.schema : LeaveExport;
+  if (mongoose.models && mongoose.models.Leave) return mongoose.models.Leave;
+  return mongoose.model('Leave', schema);
+};
 
 // @desc    Apply for leave
 // @route   POST /api/leaves
@@ -13,6 +27,13 @@ exports.applyForLeave = async (req, res) => {
     }
 
     const { leaveType, startDate, endDate, reason } = req.body;
+
+    const Leave = resolveLeaveModel(req);
+
+    // Ensure the authenticated user is linked to an employee record
+    if (!req.user || !req.user.employee) {
+      return res.status(400).json({ message: 'Authenticated user is not linked to an employee record' });
+    }
 
     // Check if end date is after start date
     if (moment(endDate).isBefore(moment(startDate))) {
@@ -27,7 +48,10 @@ exports.applyForLeave = async (req, res) => {
       reason
     });
 
-    await leave.populate('employee', 'name email department');
+    // If the model is a mongoose document, populate for response
+    if (leave && typeof leave.populate === 'function') {
+      await leave.populate('employee', 'name email department');
+    }
 
     res.status(201).json(leave);
   } catch (error) {
@@ -41,6 +65,7 @@ exports.applyForLeave = async (req, res) => {
 // @access  Private
 exports.getMyLeaves = async (req, res) => {
   try {
+    const Leave = resolveLeaveModel(req);
     const leaves = await Leave.find({ employee: req.user.employee._id })
       .populate('approvedBy', 'name')
       .sort({ createdAt: -1 });
@@ -64,6 +89,7 @@ exports.getAllLeaves = async (req, res) => {
       filter.status = status;
     }
 
+    const Leave = resolveLeaveModel(req);
     const leaves = await Leave.find(filter)
       .populate('employee', 'name email department position')
       .populate('approvedBy', 'name')
@@ -87,6 +113,7 @@ exports.updateLeaveStatus = async (req, res) => {
       return res.status(400).json({ message: 'Invalid status' });
     }
 
+    const Leave = resolveLeaveModel(req);
     const leave = await Leave.findById(req.params.id);
 
     if (!leave) {
@@ -98,8 +125,10 @@ exports.updateLeaveStatus = async (req, res) => {
     leave.approvedAt = new Date();
 
     await leave.save();
-    await leave.populate('employee', 'name email department');
-    await leave.populate('approvedBy', 'name');
+    if (typeof leave.populate === 'function') {
+      await leave.populate('employee', 'name email department');
+      await leave.populate('approvedBy', 'name');
+    }
 
     res.json(leave);
   } catch (error) {
@@ -115,6 +144,7 @@ exports.getLeaveStats = async (req, res) => {
   try {
     const currentYear = moment().year();
 
+    const Leave = resolveLeaveModel(req);
     const stats = await Leave.aggregate([
       {
         $match: {

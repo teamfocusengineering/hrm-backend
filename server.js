@@ -56,6 +56,14 @@ const startServer = async () => {
 
   app.use(express.json());
 
+  // Development request logger to aid debugging
+  if (process.env.NODE_ENV === 'development') {
+    app.use((req, res, next) => {
+      console.log(`➡️  ${req.method} ${req.originalUrl} | Host: ${req.get('host')} | Origin: ${req.get('origin') || 'N/A'} | Tenant header: ${req.headers['x-tenant'] || req.headers['x-tenant-id'] || 'N/A'}`);
+      next();
+    });
+  }
+
   // Tenant detection middleware for all routes
   app.use(detectTenant);
 
@@ -71,6 +79,9 @@ const startServer = async () => {
   app.use('/api/permissions', require('./routes/permissions'));
   // Add these with your other app.use routes
   app.use('/api/projects', require('./routes/projects'));
+  // Mount task progress routes before generic task routes to ensure
+  // more specific endpoints (like /my-updates/today) are matched first.
+  app.use('/api/tasks', require('./routes/taskProgress'));
   app.use('/api/tasks', require('./routes/tasks'));
   app.use('/api/notifications', require('./routes/notifications'));
 

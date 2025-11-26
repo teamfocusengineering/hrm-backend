@@ -44,7 +44,7 @@ const tenantSchema = new mongoose.Schema({
     enum: ['1-10', '11-50', '51-200', '201-500', '501-1000', '1000+'],
     default: '1-10'
   },
-  // Public portal URL for the tenant (optional). Example: https://hrm-tenant.pages.dev/company-subdomain
+  // Public portal URL for the tenant (optional). Example: https://hrm.focusengineeringapp.com/company-subdomain
   portalUrl: {
     type: String,
     trim: true,

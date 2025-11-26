@@ -20,6 +20,8 @@ exports.getCompanyInfo = async (req, res) => {
 // @access  Private/Admin
 exports.updateCompanyInfo = async (req, res) => {
   try {
+    const { Company } = getSuperAdminModels();
+    console.log('updateCompanyInfo: Company model present?', !!Company);
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       return res.status(400).json({ errors: errors.array() });
@@ -54,7 +56,7 @@ exports.updateCompanyInfo = async (req, res) => {
       updatedAt: company.updatedAt
     });
   } catch (error) {
-    console.error('Update company info error:', error);
+    console.error('Update company info error:', error && error.stack ? error.stack : error);
     res.status(500).json({ message: 'Server error' });
   }
 };
