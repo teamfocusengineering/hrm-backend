@@ -6,8 +6,9 @@ const { validationResult } = require('express-validator');
 // @access  Private
 exports.getCompanyInfo = async (req, res) => {
   try {
-  const { Company } = getSuperAdminModels();
-  const company = await Company.getCompany();
+    // Use tenant-scoped Company model when present, otherwise fall back to super-admin
+    const Company = (req && req.models && req.models.Company) ? req.models.Company : getSuperAdminModels().Company;
+    const company = (Company.getCompany) ? await Company.getCompany() : await Company.findOne();
     res.json(company);
   } catch (error) {
     console.error('Get company info error:', error);
@@ -20,8 +21,15 @@ exports.getCompanyInfo = async (req, res) => {
 // @access  Private/Admin
 exports.updateCompanyInfo = async (req, res) => {
   try {
-    const { Company } = getSuperAdminModels();
-    console.log('updateCompanyInfo: Company model present?', !!Company);
+    // Prefer tenant Company model when available
+    const Company = (req && req.models && req.models.Company) ? req.models.Company : getSuperAdminModels().Company;
+    console.log('updateCompanyInfo: tenant present?', !!req.tenant, 'tenantId:', req.tenant ? String(req.tenant._id) : 'none', 'usingTenantModel?', !!(req && req.models && req.models.Company));
+
+    // Extra safety: require tenant context for updates
+    if (!req.tenant) {
+      return res.status(400).json({ message: 'Company context required' });
+    }
+
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       return res.status(400).json({ errors: errors.array() });
@@ -29,12 +37,13 @@ exports.updateCompanyInfo = async (req, res) => {
 
     const { name, logo, address, contact, settings } = req.body;
 
-    // Get the company document (there should only be one)
-    let company = await Company.findOne();
-    
-    if (!company) {
-      // Create new company if doesn't exist
-      company = new Company();
+    // Get the company document (there should only be one). Use helper if available
+    let company;
+    if (Company.getCompany) {
+      company = await Company.getCompany();
+    } else {
+      company = await Company.findOne();
+      if (!company) company = new Company();
     }
 
     // Update fields
@@ -73,14 +82,26 @@ exports.uploadLogo = async (req, res) => {
       return res.status(400).json({ message: 'Logo data is required' });
     }
 
-  const { Company } = getSuperAdminModels();
-  const company = await Company.getCompany();
-    company.logo = logo;
-    await company.save();
+    const Company = (req && req.models && req.models.Company) ? req.models.Company : getSuperAdminModels().Company;
+
+    // Extra safety: require tenant context for logo uploads
+    if (!req.tenant) {
+      return res.status(400).json({ message: 'Company context required' });
+    }
+    const company = (Company.getCompany) ? await Company.getCompany() : await Company.findOne();
+    if (!company) {
+      // Create if missing
+      const c = new Company();
+      c.logo = logo;
+      await c.save();
+    } else {
+      company.logo = logo;
+      await company.save();
+    }
 
     res.json({
       message: 'Logo uploaded successfully',
-      logo: company.logo
+      logo: (company && company.logo) || logo
     });
   } catch (error) {
     console.error('Upload logo error:', error);
@@ -93,9 +114,10 @@ exports.uploadLogo = async (req, res) => {
 // @access  Public
 exports.getPublicCompanyInfo = async (req, res) => {
   try {
-  const { Company } = getSuperAdminModels();
-  const company = await Company.getCompany();
-    
+    // Public company info may be tenant-scoped (when accessed via subdomain) or super-admin
+    const Company = (req && req.models && req.models.Company) ? req.models.Company : getSuperAdminModels().Company;
+    const company = (Company.getCompany) ? await Company.getCompany() : await Company.findOne();
+
     // Return only public information (no sensitive data)
     res.json({
       _id: company._id,

@@ -7,17 +7,19 @@ const {
   getPublicCompanyInfo
 } = require('../controllers/companyController');
 const { protect, authorize } = require('../middleware/auth');
+const { requireTenant } = require('../middleware/tenant');
 
 const router = express.Router();
 
 // Public route for login page
 router.get('/public', getPublicCompanyInfo);
 
-// Protected routes
-router.get('/', protect, getCompanyInfo);
+// Protected routes (require tenant context)
+router.get('/', protect, requireTenant, getCompanyInfo);
 
 router.put('/', 
   protect,
+  requireTenant,
   authorize('admin'),
   [
     body('name')
@@ -31,6 +33,7 @@ router.put('/',
 
 router.post('/logo',
   protect,
+  requireTenant,
   authorize('admin'),
   [
     body('logo')
