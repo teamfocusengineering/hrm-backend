@@ -17,12 +17,10 @@ const projectSchema = new mongoose.Schema({
     trim: true
   },
   startDate: {
-    type: Date,
-    required: [true, 'Please add a start date']
+    type: Date
   },
   endDate: {
-    type: Date,
-    required: [true, 'Please add an end date']
+    type: Date
   },
   assignedEmployees: [{
     type: mongoose.Schema.Types.ObjectId,
