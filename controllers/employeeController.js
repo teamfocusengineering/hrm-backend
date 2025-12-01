@@ -243,6 +243,7 @@ exports.updateEmployee = async (req, res) => {
     } = req.body;
 
     // Update all fields including workMode
+    const previousEmail = employee.email;
     employee.name = name || employee.name;
     employee.email = email || employee.email;
     employee.department = department || employee.department;
@@ -256,16 +257,54 @@ exports.updateEmployee = async (req, res) => {
     employee.workMode = workMode || employee.workMode;
     employee.isActive = isActive !== undefined ? isActive : employee.isActive;
 
-    // If email is updated, also update the user email
-    if (email && email !== employee.email) {
-      await User.findOneAndUpdate(
-        { employee: employee._id },
-        { email: email }
-      );
+    // If email is updated (different from previous), also update the user email
+    if (email && email !== previousEmail) {
+      try {
+        await User.findOneAndUpdate(
+          { employee: employee._id },
+          { email: email }
+        );
+      } catch (err) {
+        console.error('Failed to update linked User email:', err);
+        // continue saving employee even if user update fails
+      }
     }
 
     const updatedEmployee = await employee.save();
-    
+
+    // If a password was provided in the update payload, also update the linked User's password
+    const newPassword = req.body.password;
+    if (newPassword && String(newPassword).trim().length > 0) {
+      try {
+        // find user linked to this employee and update password
+        const linkedUser = await User.findOne({ employee: employee._id });
+        if (linkedUser) {
+          // Basic validation
+          if (String(newPassword).length < 6) {
+            console.warn('Password provided for update is shorter than 6 characters; skipping user password update');
+          } else {
+            linkedUser.password = newPassword;
+            linkedUser.passwordChangedAt = Date.now();
+            // invalidate sessions so they must re-login
+            if (typeof linkedUser.invalidateSession === 'function') {
+              try {
+                linkedUser.invalidateSession();
+              } catch (sessErr) {
+                console.warn('Failed to invalidate sessions for user after password change:', sessErr);
+              }
+            }
+            await linkedUser.save();
+            console.log(`Updated password for linked user of employee ${updatedEmployee._id}`);
+          }
+        } else {
+          console.warn('No linked User found for employee when attempting to update password');
+        }
+      } catch (pwErr) {
+        console.error('Error updating linked User password:', pwErr);
+        // don't fail employee update because of user password update failure
+      }
+    }
+
     res.json({
       _id: updatedEmployee._id,
       name: updatedEmployee.name,
