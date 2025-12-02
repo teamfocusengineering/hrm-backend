@@ -239,7 +239,8 @@ exports.updateEmployee = async (req, res) => {
 
     const { 
       name, email, department, position, salary, isActive,
-      phone, dateOfBirth, gender, address, employmentType, workMode
+      phone, dateOfBirth, gender, address, employmentType, workMode,
+      joiningDate
     } = req.body;
 
     // Update all fields including workMode
@@ -256,6 +257,14 @@ exports.updateEmployee = async (req, res) => {
     employee.employmentType = employmentType || employee.employmentType;
     employee.workMode = workMode || employee.workMode;
     employee.isActive = isActive !== undefined ? isActive : employee.isActive;
+    // Allow admin to update joining date at any time
+    if (joiningDate) {
+      try {
+        employee.joiningDate = new Date(joiningDate);
+      } catch (err) {
+        console.warn('Invalid joiningDate provided, skipping update:', joiningDate);
+      }
+    }
 
     // If email is updated (different from previous), also update the user email
     if (email && email !== previousEmail) {
@@ -313,6 +322,7 @@ exports.updateEmployee = async (req, res) => {
       position: updatedEmployee.position,
       salary: updatedEmployee.salary,
       workMode: updatedEmployee.workMode,
+      joiningDate: updatedEmployee.joiningDate,
       isActive: updatedEmployee.isActive
     });
   } catch (error) {
