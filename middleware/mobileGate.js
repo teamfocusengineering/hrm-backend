@@ -22,11 +22,26 @@ module.exports = async function mobileGate(req, res, next) {
   try {
     const origin = req.get('origin') || '';
     const hostHeader = req.get('host') || '';
-    const requestPath = req.originalUrl || req.url || '';
+    let requestPath = req.originalUrl || req.url || '';
 
     // If request doesn't appear to be for the tenant-app (by origin, host, or path), skip enforcement.
     const matchesHost = TENANT_APP_HOSTS.some(h => origin.includes(h) || hostHeader.includes(h));
-    const matchesPath = TENANT_APP_PATH_PREFIXES.some(p => requestPath.startsWith(p));
+    let matchesPath = TENANT_APP_PATH_PREFIXES.some(p => requestPath.startsWith(p));
+
+    // If request path starts with a tenant-app prefix and then /api, strip the prefix
+    // so Express routes mounted at /api/* will match requests sent to /<prefix>/api/*
+    for (const p of TENANT_APP_PATH_PREFIXES) {
+      if (requestPath.startsWith(p + '/api')) {
+        const stripped = requestPath.replace(p, '');
+        // mutate the request url so downstream routing matches
+        req.url = stripped;
+        req.originalUrl = stripped;
+        requestPath = stripped;
+        matchesPath = true;
+        break;
+      }
+    }
+
     if (!matchesHost && !matchesPath) return next();
 
     // Skip super-admin APIs
