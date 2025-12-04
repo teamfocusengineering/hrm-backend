@@ -117,6 +117,34 @@ exports.getEmployees = async (req, res) => {
       tenantEmployees = await Employee.find(tenantFilter)
         .populate('user', 'role isActive lastLogin mobileAllowed email')
         .select('-__v');
+
+      // Ensure each tenant employee has a populated `user.mobileAllowed` when possible.
+      // Some documents may have an unpopulated user or a populated user missing the
+      // `mobileAllowed` field — attempt to fetch the authoritative user record.
+      try {
+        await Promise.all(tenantEmployees.map(async (emp, i) => {
+          try {
+            // If user is an ObjectId or missing, try to resolve by employee reference
+            const curUser = emp.user;
+            if (!curUser) {
+              const found = await req.models.User.findOne({ employee: emp._id }).select('role isActive lastLogin mobileAllowed email');
+              if (found) tenantEmployees[i].user = found;
+              return;
+            }
+
+            // If populated but missing mobileAllowed, reload authoritative user
+            if (curUser && typeof curUser === 'object' && typeof curUser.mobileAllowed === 'undefined') {
+              const reloaded = await req.models.User.findById(curUser._id).select('role isActive lastLogin mobileAllowed email');
+              if (reloaded) tenantEmployees[i].user = reloaded;
+            }
+          } catch (e) {
+            // ignore per-item errors
+            console.debug('ensure tenant employee user populated failed for', emp._id, e && e.message ? e.message : e);
+          }
+        }));
+      } catch (e) {
+        console.debug('tenantEmployees user-populate pass failed', e && e.message ? e.message : e);
+      }
     }
 
     // Only query main DB when explicitly requested via query param `includeLegacy=true`
@@ -154,7 +182,34 @@ exports.getEmployees = async (req, res) => {
             console.log('getEmployees -> countDocuments failed on main DB:', countErr && countErr.message ? countErr.message : countErr);
           }
 
-          mainEmployees = await MainEmployee.find(mainFilter).select('-__v');
+          mainEmployees = await MainEmployee.find(mainFilter)
+            .populate('user', 'role isActive lastLogin mobileAllowed email')
+            .select('-__v');
+
+          // Try to ensure mainEmployees also have authoritative user.mobileAllowed
+          try {
+            const MainUser = mainConn.models && mainConn.models.User
+              ? mainConn.models.User
+              : mainConn.model('User', require('../models/User'));
+            await Promise.all(mainEmployees.map(async (emp, i) => {
+              try {
+                const curUser = emp.user;
+                if (!curUser) {
+                  const found = await MainUser.findOne({ employee: emp._id }).select('role isActive lastLogin mobileAllowed email');
+                  if (found) mainEmployees[i].user = found;
+                  return;
+                }
+                if (curUser && typeof curUser === 'object' && typeof curUser.mobileAllowed === 'undefined') {
+                  const reloaded = await MainUser.findById(curUser._id).select('role isActive lastLogin mobileAllowed email');
+                  if (reloaded) mainEmployees[i].user = reloaded;
+                }
+              } catch (e) {
+                console.debug('ensure main employee user populated failed for', emp._id, e && e.message ? e.message : e);
+              }
+            }));
+          } catch (e) {
+            console.debug('mainEmployees user-populate pass failed', e && e.message ? e.message : e);
+          }
         }
       } catch (err) {
         console.error('Error querying main DB for employees:', err && err.message ? err.message : err);
@@ -522,7 +577,21 @@ exports.setMobileAccess = async (req, res) => {
     user.mobileAllowed = !!mobileAllowed;
     await user.save();
 
-    res.json({
+    // Try to return the updated employee record (populated with the user)
+    try {
+      const Employee = req.models.Employee;
+      if (Employee) {
+        const employeeDoc = await Employee.findOne({ _id: user.employee }).populate('user', 'role isActive lastLogin mobileAllowed email');
+        if (employeeDoc) {
+          return res.json(employeeDoc);
+        }
+      }
+    } catch (e) {
+      console.warn('setMobileAccess: failed to fetch populated employee after updating user', e && e.message ? e.message : e);
+    }
+
+    // Fallback: return a simple confirmation with the authoritative boolean
+    return res.json({
       message: `Mobile access ${user.mobileAllowed ? 'enabled' : 'disabled'} for user ${user.email}`,
       mobileAllowed: user.mobileAllowed
     });
