@@ -4,22 +4,30 @@ const DefaultUser = require('../models/User');
 // Simple mobile UA check
 const isMobileUA = (ua = '') => /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(ua);
 
-// Hosts/origins used by tenant-app (if request comes from one of these origins, enforce mobile gate)
-const TENANT_APP_ORIGINS = [
+// Tenant app identification: trusted hosts and path prefixes for tenant-app.
+const TENANT_APP_HOSTS = [
   'hrm.focusengineeringapp.com',
   'localhost:5173',
   'localhost:5174',
   'localhost:5175'
 ];
 
+// Some deployments serve the tenant-app under a path (e.g. /focusengineering)
+const TENANT_APP_PATH_PREFIXES = [
+  '/focusengineering',
+  '/balaji'
+];
+
 module.exports = async function mobileGate(req, res, next) {
   try {
-    // Only enforce when request appears to come from tenant-app origins (if no origin header, skip enforcement)
-    const origin = req.get('origin');
-    if (!origin) return next();
+    const origin = req.get('origin') || '';
+    const hostHeader = req.get('host') || '';
+    const requestPath = req.originalUrl || req.url || '';
 
-    const matchesTenantApp = TENANT_APP_ORIGINS.some(h => origin.includes(h));
-    if (!matchesTenantApp) return next();
+    // If request doesn't appear to be for the tenant-app (by origin, host, or path), skip enforcement.
+    const matchesHost = TENANT_APP_HOSTS.some(h => origin.includes(h) || hostHeader.includes(h));
+    const matchesPath = TENANT_APP_PATH_PREFIXES.some(p => requestPath.startsWith(p));
+    if (!matchesHost && !matchesPath) return next();
 
     // Skip super-admin APIs
     if (req.originalUrl && req.originalUrl.startsWith('/api/super-admin')) return next();
