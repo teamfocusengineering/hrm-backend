@@ -115,7 +115,7 @@ exports.getEmployees = async (req, res) => {
       // (legacy or migrated records). So only apply the active/inactive filter.
       const tenantFilter = { ...filter };
       tenantEmployees = await Employee.find(tenantFilter)
-        .populate('user', 'role isActive lastLogin')
+        .populate('user', 'role isActive lastLogin mobileAllowed email')
         .select('-__v');
     }
 
@@ -200,7 +200,7 @@ exports.getEmployee = async (req, res) => {
     if (req.user.role === 'admin') {
       // Admin can view any employee
       employee = await Employee.findById(req.params.id)
-        .populate('user', 'role isActive lastLogin email');
+        .populate('user', 'role isActive lastLogin mobileAllowed email');
     } else {
       // Employee can only view their own profile
       const User = req.models.User;
@@ -488,6 +488,46 @@ exports.getEmployeesDebug = async (req, res) => {
     return res.json(result);
   } catch (error) {
     console.error('Get employees debug error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// @desc    Set mobile access for an employee's user account (Admin only)
+// @route   PUT /api/employees/:id/mobile-allow
+// @access  Private/Admin
+exports.setMobileAccess = async (req, res) => {
+  try {
+    const User = req.models.User;
+    const employeeId = req.params.id;
+    const { mobileAllowed } = req.body;
+
+    if (typeof mobileAllowed === 'undefined') {
+      return res.status(400).json({ message: 'mobileAllowed boolean is required in request body' });
+    }
+
+    // Try to find associated user by employee reference
+    let user = await User.findOne({ employee: employeeId });
+
+    // If not found, maybe the id passed is the user id
+    if (!user) {
+      if (String(employeeId).length === 24) {
+        user = await User.findById(employeeId);
+      }
+    }
+
+    if (!user) {
+      return res.status(404).json({ message: 'User account for this employee not found' });
+    }
+
+    user.mobileAllowed = !!mobileAllowed;
+    await user.save();
+
+    res.json({
+      message: `Mobile access ${user.mobileAllowed ? 'enabled' : 'disabled'} for user ${user.email}`,
+      mobileAllowed: user.mobileAllowed
+    });
+  } catch (error) {
+    console.error('Set mobile access error:', error);
     res.status(500).json({ message: 'Server error' });
   }
 };

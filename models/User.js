@@ -36,6 +36,12 @@ const userSchema = new mongoose.Schema({
     type: Boolean,
     default: true
   },
+  // Allow admin to enable mobile access for this user when needed
+  mobileAllowed: {
+    type: Boolean,
+    // Default: allowed by default per requested behaviour
+    default: true
+  },
   lastLogin: {
     type: Date
   },

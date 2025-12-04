@@ -67,6 +67,10 @@ const startServer = async () => {
   // Tenant detection middleware for all routes
   app.use(detectTenant);
 
+  // Mobile gate: enforce tenant-app mobile access policy (blocks API use from mobile UA unless allowed)
+  const mobileGate = require('./middleware/mobileGate');
+  app.use(mobileGate);
+
   // Public routes (no tenant required)
   app.use('/api/super-admin', require('./routes/super-admin'));
   app.use('/api/auth', require('./routes/auth'));

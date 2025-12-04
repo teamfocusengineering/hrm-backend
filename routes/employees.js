@@ -35,6 +35,8 @@ router.get('/', authorize('admin'), getEmployees);
 router.get('/debug-counts', authorize('admin'), getEmployeesDebug);
 router.delete('/:id', authorize('admin'), deleteEmployee);
 router.put('/:id', authorize('admin'), updateEmployee);
+// Admin: allow/deny mobile access for a given employee's user account
+router.put('/:id/mobile-allow', authorize('admin'), require('./../controllers/employeeController').setMobileAccess);
 router.get('/:id', getEmployee);
 
 // Employee self-service routes

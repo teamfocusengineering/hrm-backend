@@ -49,6 +49,7 @@ exports.login = async (req, res) => {
       _id: user._id,
       employee: user.employee,
       role: user.role,
+      mobileAllowed: user.mobileAllowed || false,
       tenant: user.tenant,
       token: token,
       loginTime: user.lastLogin
@@ -157,6 +158,7 @@ exports.getMe = async (req, res) => {
       _id: user._id,
       employee: user.employee,
       role: user.role,
+      mobileAllowed: user.mobileAllowed || false,
       lastLogin: user.lastLogin,
       lastLogout: user.lastLogout,
       isSessionValid: user.isSessionValid(req.headers.authorization?.split(' ')[1])
