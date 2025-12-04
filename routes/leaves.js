@@ -14,7 +14,7 @@ const router = express.Router();
 router.use(protect);
 
 router.post('/', [
-  body('leaveType').isIn(['sick', 'casual', 'annual', 'maternity', 'paternity', 'other']),
+  body('leaveType').isIn(['sick', 'casual', 'annual', 'maternity', 'paternity', 'comp-off', 'other']),
   body('startDate').isDate(),
   body('endDate').isDate(),
   body('reason').notEmpty()
