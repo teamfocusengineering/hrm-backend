@@ -1,6 +1,7 @@
 const Attendance = require('../models/Attendance');
 const Employee = require('../models/Employee');
 const moment = require('moment');
+const reverseGeocode = require('../utils/reverseGeocode');
 
 // @desc    Check in employee
 // @route   POST /api/attendance/checkin
@@ -23,11 +24,32 @@ exports.checkIn = async (req, res) => {
       return res.status(400).json({ message: 'Already checked in for today' });
     }
 
-    const attendance = await Attendance.create({
+    // Accept optional location payload from the client (checkInLat/checkInLng/checkInAccuracy/checkInPlace)
+    const { checkInLat, checkInLng, checkInAccuracy, checkInPlace } = req.body || {};
+
+    const attendanceData = {
       employee: req.user.employee._id,
       date: new Date(),
       checkIn: new Date()
-    });
+    };
+
+    if (checkInLat !== undefined) attendanceData.checkInLat = Number(checkInLat);
+    if (checkInLng !== undefined) attendanceData.checkInLng = Number(checkInLng);
+    if (checkInAccuracy !== undefined) attendanceData.checkInAccuracy = Number(checkInAccuracy);
+    if (checkInPlace) attendanceData.checkInPlace = String(checkInPlace);
+
+    // If coords provided but no human-readable place, attempt reverse geocoding (best-effort)
+    if ((attendanceData.checkInLat != null && attendanceData.checkInLng != null) && !attendanceData.checkInPlace) {
+      try {
+        const place = await reverseGeocode(attendanceData.checkInLat, attendanceData.checkInLng);
+        if (place) attendanceData.checkInPlace = place;
+      } catch (err) {
+        // ignore reverse geocode failures
+        console.warn('Reverse geocode error (check-in):', err && err.message ? err.message : err);
+      }
+    }
+
+    const attendance = await Attendance.create(attendanceData);
 
     res.status(201).json(attendance);
   } catch (error) {
@@ -60,7 +82,25 @@ exports.checkOut = async (req, res) => {
       return res.status(400).json({ message: 'Already checked out for today' });
     }
 
+    // Accept optional location payload for checkout
+    const { checkOutLat, checkOutLng, checkOutAccuracy, checkOutPlace } = req.body || {};
+
     attendance.checkOut = new Date();
+    if (checkOutLat !== undefined) attendance.checkOutLat = Number(checkOutLat);
+    if (checkOutLng !== undefined) attendance.checkOutLng = Number(checkOutLng);
+    if (checkOutAccuracy !== undefined) attendance.checkOutAccuracy = Number(checkOutAccuracy);
+    if (checkOutPlace) attendance.checkOutPlace = String(checkOutPlace);
+
+    // If checkout coords provided but no place, attempt reverse geocoding
+    if ((attendance.checkOutLat != null && attendance.checkOutLng != null) && !attendance.checkOutPlace) {
+      try {
+        const place = await reverseGeocode(attendance.checkOutLat, attendance.checkOutLng);
+        if (place) attendance.checkOutPlace = place;
+      } catch (err) {
+        console.warn('Reverse geocode error (check-out):', err && err.message ? err.message : err);
+      }
+    }
+
     await attendance.save();
 
     res.json(attendance);

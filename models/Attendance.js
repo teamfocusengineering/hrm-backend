@@ -16,8 +16,32 @@ const attendanceSchema = new mongoose.Schema({
     type: Date,
     required: true
   },
+  checkInLat: {
+    type: Number
+  },
+  checkInLng: {
+    type: Number
+  },
+  checkInAccuracy: {
+    type: Number
+  },
+  checkInPlace: {
+    type: String
+  },
   checkOut: {
     type: Date
+  },
+  checkOutLat: {
+    type: Number
+  },
+  checkOutLng: {
+    type: Number
+  },
+  checkOutAccuracy: {
+    type: Number
+  },
+  checkOutPlace: {
+    type: String
   },
   workingHours: {
     type: Number,
