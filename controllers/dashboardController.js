@@ -140,9 +140,16 @@ exports.getEmployeeDashboard = async (req, res) => {
       date: { $gte: startDate, $lte: endDate }
     });
 
-    const presentDays = monthlyAttendance.filter(a => a.status === 'present').length;
+    const presentLikeStatuses = ['present', 'present-with-permission'];
+    const workedStatuses = [...presentLikeStatuses, 'half-day'];
+
+    const presentDays = monthlyAttendance.filter(a => presentLikeStatuses.includes(a.status)).length;
     const halfDays = monthlyAttendance.filter(a => a.status === 'half-day').length;
-    const totalWorkingHours = monthlyAttendance.reduce((sum, a) => sum + (a.workingHours || 0), 0);
+    const totalWorkingHours = monthlyAttendance.reduce((sum, a) => sum + (Number(a.workingHours) || 0), 0);
+    const workedEntries = monthlyAttendance.filter(a => workedStatuses.includes(a.status) || (a.checkIn && a.checkOut));
+    const averageHours = workedEntries.length > 0
+      ? totalWorkingHours / workedEntries.length
+      : 0;
 
     // Leave stats
     const employeeObjectId = mongoose.isValidObjectId(employeeId)
@@ -186,7 +193,8 @@ exports.getEmployeeDashboard = async (req, res) => {
         presentDays,
         halfDays,
         totalWorkingHours: totalWorkingHours.toFixed(2),
-        workingDays: moment().date() // days passed in month
+        workingDays: moment().date(),
+        averageHours: averageHours.toFixed(2)
       },
       leaveStats,
       currentPayroll,

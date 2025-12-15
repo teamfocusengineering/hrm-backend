@@ -77,7 +77,7 @@ exports.createProject = async (req, res) => {
     }
 
     const populatedProject = await Project.findById(project._id)
-      .populate('assignedEmployees', 'name email position department')
+      .populate('assignedEmployees', 'name email position department isActive')
       .populate('createdBy', 'name email');
 
     res.status(201).json({
@@ -121,7 +121,7 @@ exports.getProjects = async (req, res) => {
     }
 
     const projects = await Project.find(filter)
-      .populate('assignedEmployees', 'name email position department')
+      .populate('assignedEmployees', 'name email position department isActive')
       .populate('createdBy', 'name email')
       .sort({ createdAt: -1 });
 
@@ -149,7 +149,7 @@ exports.getProject = async (req, res) => {
       tenant: req.tenant._id,
       isActive: true
     })
-      .populate('assignedEmployees', 'name email position department user')
+      .populate('assignedEmployees', 'name email position department user isActive')
       .populate('createdBy', 'name email');
 
     if (!project) {
@@ -227,7 +227,7 @@ exports.updateProject = async (req, res) => {
       req.body,
       { new: true, runValidators: true }
     )
-      .populate('assignedEmployees', 'name email position department')
+      .populate('assignedEmployees', 'name email position department isActive')
       .populate('createdBy', 'name email');
 
     if (!project) {
