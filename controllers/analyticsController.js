@@ -62,7 +62,7 @@ exports.getAnalyticsOverview = async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('Analytics overview error:', error);
+    console.error('Analytics overview error H:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to load analytics overview'
