@@ -11,18 +11,18 @@ exports.checkIn = async (req, res) => {
     const today = moment().startOf('day');
 
     // ✅ Log incoming request
-    console.log('Check-in request body:', req.body);
-    console.log('Check-in location data:', {
-      lat: req.body.checkInLat,
-      lng: req.body.checkInLng,
-      accuracy: req.body.checkInAccuracy,
-      place: req.body.checkInPlace
-    });
+    //console.log('Check-in request body:', req.body);
+    // console.log('Check-in location data:', {
+    //   lat: req.body.checkInLat,
+    //   lng: req.body.checkInLng,
+    //   accuracy: req.body.checkInAccuracy,
+    //   place: req.body.checkInPlace
+    // });
 
     // Get employee details
     const employee = await Employee.findById(req.user.employee._id);
     if (!employee) {
-      return res.status(404).json({ message: 'Employee not found' });
+      return res.status(404).json({ message: 'Employee not found Heiidfgfdg' });
     }
 
     // Check if department requires shift
