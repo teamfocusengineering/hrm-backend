@@ -22,7 +22,7 @@ exports.checkIn = async (req, res) => {
     // Get employee details
     const employee = await Employee.findById(req.user.employee._id);
     if (!employee) {
-      return res.status(404).json({ message: 'Employee not found Heiidfgfdg' });
+      return res.status(404).json({ message: 'Employee not found' });
     }
 
     // Check if department requires shift
