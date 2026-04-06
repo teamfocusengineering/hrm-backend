@@ -5,7 +5,11 @@ const {
   getMyLeaves,
   getAllLeaves,
   updateLeaveStatus,
-  getLeaveStats
+  getLeaveStats,
+  getTeamPendingLeaves,
+  updateTeamLeaveStatus,
+  getAllPendingLeavesForLead,
+  updateLeadLeaveStatus
 } = require('../controllers/leaveController');
 const { protect, authorize } = require('../middleware/auth');
 
@@ -23,6 +27,11 @@ router.post('/', [
 router.get('/my-leaves', getMyLeaves);
 router.get('/stats', getLeaveStats);
 router.get('/', authorize('admin'), getAllLeaves);
+router.get('/team-pending', getTeamPendingLeaves);
+router.get('/lead-pending', authorize('team-lead'), getAllPendingLeavesForLead);
+
+router.put('/:id/lead-status', authorize('team-lead'), updateLeadLeaveStatus);
+router.put('/:id/team-status', authorize(['admin', 'team-lead']), updateTeamLeaveStatus);
 router.put('/:id/status', authorize('admin'), updateLeaveStatus);
 
 module.exports = router;

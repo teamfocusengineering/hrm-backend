@@ -376,8 +376,9 @@ exports.getAnalyticsDashboard = async (req, res) => {
   try {
     const Employee = resolveModel(req, 'Employee', require('../models/Employee'));
     const Attendance = resolveModel(req, 'Attendance', require('../models/Attendance'));
-    const Project = resolveModel(req, 'Project', require('../models/Project'));
+const Project = resolveModel(req, 'Project', require('../models/Project'));
     const Task = resolveModel(req, 'Task', require('../models/Task'));
+    const Permission = resolveModel(req, 'Permission', require('../models/Permission'));
 
     // 1. EMPLOYEE ATTENDANCE RATE ANALYTICS
     const totalEmployees = await Employee.countDocuments({ isActive: true });
@@ -712,7 +713,8 @@ exports.getAnalyticsDashboard = async (req, res) => {
           totalEmployees,
           totalProjects,
           avgAttendance: Math.round(currentMonthRate * 100) / 100,
-          onTrackProjects
+          onTrackProjects,
+          pendingPermissions: await Permission.countDocuments({ status: 'pending' })
         }
       }
     });

@@ -17,9 +17,9 @@ const userSchema = new mongoose.Schema({
     required: [true, 'Please add a password'],
     minlength: 6
   },
-  role: {
+role: {
     type: String,
-    enum: ['employee', 'admin','manager'],
+    enum: ['employee', 'admin', 'manager', 'team-lead'],
     default: 'employee'
   },
   employee: {

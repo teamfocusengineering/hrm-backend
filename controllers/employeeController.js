@@ -23,7 +23,9 @@ exports.createEmployee = async (req, res) => {
       gender,
       address,
       employmentType,
-      workMode
+      workMode,
+      teamLead,
+      teamMembers
     } = req.body;
 
     // Use tenant-specific models
@@ -34,6 +36,17 @@ exports.createEmployee = async (req, res) => {
     const employeeExists = await Employee.findOne({ email });
     if (employeeExists) {
       return res.status(400).json({ message: 'Employee already exists with this email' });
+    }
+
+    // Validate teamLead if provided
+    if (teamLead) {
+      const teamLeadEmp = await Employee.findById(teamLead);
+      if (!teamLeadEmp) {
+        return res.status(400).json({ message: 'Invalid teamLead ID' });
+      }
+      if (teamLeadEmp._id.toString() === employee._id.toString()) {
+        return res.status(400).json({ message: 'Employee cannot be their own team lead' });
+      }
     }
 
     // Create employee record
@@ -49,8 +62,24 @@ exports.createEmployee = async (req, res) => {
       address,
       employmentType,
       workMode: workMode || 'wfo',
-      tenant: req.tenant._id // Add tenant reference
+      tenant: req.tenant._id,
+      teamLead: teamLead || undefined,
+      teamMembers: teamMembers || []
     });
+
+    // Auto-create department setting if it doesn't exist
+    if (department && req.tenant && req.tenant._id) {
+      const DepartmentSetting = req.models.DepartmentSetting;
+      try {
+        await DepartmentSetting.findOneAndUpdate(
+          { tenant: req.tenant._id, departmentName: department },
+          { tenant: req.tenant._id, departmentName: department, shiftRequired: false },
+          { upsert: true, new: true }
+        );
+      } catch (err) {
+        console.warn('Auto-create department setting warning:', err.message);
+      }
+    }
 
     // Create user account for the employee
     const user = await User.create({
@@ -116,6 +145,8 @@ exports.getEmployees = async (req, res) => {
       const tenantFilter = { ...filter };
       tenantEmployees = await Employee.find(tenantFilter)
         .populate('user', 'role isActive lastLogin mobileAllowed email')
+        .populate('teamLead', 'name email position department')
+        .populate('teamMembers', 'name email position department')
         .select('-__v');
 
       // Ensure each tenant employee has a populated `user.mobileAllowed` when possible.
@@ -184,6 +215,8 @@ exports.getEmployees = async (req, res) => {
 
           mainEmployees = await MainEmployee.find(mainFilter)
             .populate('user', 'role isActive lastLogin mobileAllowed email')
+            .populate('teamLead', 'name email position department')
+            .populate('teamMembers', 'name email position department')
             .select('-__v');
 
           // Try to ensure mainEmployees also have authoritative user.mobileAllowed
@@ -293,9 +326,13 @@ exports.updateEmployee = async (req, res) => {
     }
 
     const { 
-      name, email, department, position, salary, isActive,
+      name, email, department, position, salary, isActive, role,
       phone, dateOfBirth, gender, address, employmentType, workMode,
-      joiningDate
+      joiningDate,
+      teamLead,
+      teamMembers,
+      addTeamMembers,
+      removeTeamMembers
     } = req.body;
 
     // Update all fields including workMode
@@ -321,6 +358,49 @@ exports.updateEmployee = async (req, res) => {
       }
     }
 
+    // Handle team assignments
+    if (teamLead !== undefined) {
+      if (teamLead) {
+        const tlEmp = await Employee.findById(teamLead);
+        if (!tlEmp) {
+          return res.status(400).json({ message: 'Invalid teamLead ID' });
+        }
+        if (tlEmp._id.toString() === employee._id.toString()) {
+          return res.status(400).json({ message: 'Employee cannot be their own team lead' });
+        }
+        employee.teamLead = teamLead;
+      } else {
+        employee.teamLead = null;
+      }
+    }
+
+    if (addTeamMembers) {
+      if (!Array.isArray(addTeamMembers)) {
+        return res.status(400).json({ message: 'addTeamMembers must be array' });
+      }
+      await Employee.updateMany(
+        { _id: { $in: addTeamMembers } },
+        { $addToSet: { teamMembers: employee._id } }
+      );
+      employee.teamMembers = employee.teamMembers || [];
+      addTeamMembers.forEach(id => {
+        if (!employee.teamMembers.includes(id)) {
+          employee.teamMembers.push(id);
+        }
+      });
+    }
+
+    if (removeTeamMembers) {
+      if (!Array.isArray(removeTeamMembers)) {
+        return res.status(400).json({ message: 'removeTeamMembers must be array' });
+      }
+      await Employee.updateMany(
+        { _id: { $in: removeTeamMembers } },
+        { $pull: { teamMembers: employee._id } }
+      );
+      employee.teamMembers = employee.teamMembers.filter(id => !removeTeamMembers.includes(id));
+    }
+
     // If email is updated (different from previous), also update the user email
     if (email && email !== previousEmail) {
       try {
@@ -334,7 +414,59 @@ exports.updateEmployee = async (req, res) => {
       }
     }
 
+    // Handle role update on linked User (admin feature)
+    let userCreated = false;
+    if (role) {
+      if (req.user.role !== 'admin') {
+        return res.status(403).json({ message: 'Only admins can change roles' });
+      }
+      if (role === 'admin') {
+        return res.status(403).json({ message: 'Cannot promote to admin via this endpoint' });
+      }
+
+      let linkedUser = await User.findOne({ employee: employee._id });
+      if (!linkedUser) {
+        // Create user if missing (data fix)
+        console.log(`Creating missing User for employee ${employee._id}, role: ${role}`);
+        linkedUser = new User({
+          email: employee.email,
+          password: 'tempSecurePass123!', // Temp; admin can reset
+          role: role,
+          employee: employee._id,
+          tenant: req.tenant._id,
+          isActive: employee.isActive,
+          mobileAllowed: true
+        });
+        await linkedUser.save();
+        userCreated = true;
+      } else if (linkedUser.role !== role) {
+        console.log(`Role change: ${linkedUser.email} ${linkedUser.role} -> ${role}`);
+        linkedUser.role = role;
+        await linkedUser.save();
+      }
+      // Also update Employee.user ref if missing
+      if (!employee.user) {
+        employee.user = linkedUser._id;
+        await employee.save();
+      }
+    }
+
     const updatedEmployee = await employee.save();
+
+    // Auto-create department setting if department changed/created
+    const newDepartment = req.body.department;
+    if (newDepartment && req.tenant && req.tenant._id) {
+      const DepartmentSetting = req.models.DepartmentSetting;
+      try {
+        await DepartmentSetting.findOneAndUpdate(
+          { tenant: req.tenant._id, departmentName: newDepartment },
+          { tenant: req.tenant._id, departmentName: newDepartment, shiftRequired: false },
+          { upsert: true, new: true }
+        );
+      } catch (err) {
+        console.warn('Auto-create department setting warning:', err.message);
+      }
+    }
 
     // If a password was provided in the update payload, also update the linked User's password
     const newPassword = req.body.password;
@@ -369,17 +501,30 @@ exports.updateEmployee = async (req, res) => {
       }
     }
 
-    res.json({
-      _id: updatedEmployee._id,
-      name: updatedEmployee.name,
-      email: updatedEmployee.email,
-      department: updatedEmployee.department,
-      position: updatedEmployee.position,
-      salary: updatedEmployee.salary,
-      workMode: updatedEmployee.workMode,
-      joiningDate: updatedEmployee.joiningDate,
-      isActive: updatedEmployee.isActive
-    });
+    // Populate updated user role in response
+    await updatedEmployee.populate('user', 'role');
+
+    const finalRole = updatedEmployee.user?.role || role || 'employee';
+    if (userCreated) {
+      res.status(201).json({
+        ...updatedEmployee.toObject(),
+        role: finalRole,
+        message: 'Employee updated and User account created'
+      });
+    } else {
+      res.json({
+        _id: updatedEmployee._id,
+        name: updatedEmployee.name,
+        email: updatedEmployee.email,
+        department: updatedEmployee.department,
+        position: updatedEmployee.position,
+        salary: updatedEmployee.salary,
+        workMode: updatedEmployee.workMode,
+        joiningDate: updatedEmployee.joiningDate,
+        isActive: updatedEmployee.isActive,
+        role: finalRole
+      });
+    }
   } catch (error) {
     console.error('Update employee error:', error);
     res.status(500).json({ message: 'Server error' });
@@ -600,3 +745,5 @@ exports.setMobileAccess = async (req, res) => {
     res.status(500).json({ message: 'Server error' });
   }
 };
+
+

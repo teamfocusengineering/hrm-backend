@@ -2,7 +2,8 @@ const DefaultEmployee = require('../models/Employee');
 const DefaultAttendance = require('../models/Attendance');
 const DefaultLeave = require('../models/Leave');
 const DefaultPayroll = require('../models/Payroll');
-const DefaultUser = require('../models/User'); // ✅ Added this line
+const DefaultShift = require('../models/Shift');
+const DefaultUser = require('../models/User');
 const moment = require('moment');
 
 const mongoose = require('mongoose');
@@ -115,23 +116,42 @@ exports.getEmployeeDashboard = async (req, res) => {
   try {
     const currentMonth = moment().month() + 1;
     const currentYear = moment().year();
-    const employeeId = req.user.employee._id;
-    // Resolve tenant-aware models (fall back to default models)
+    const employeeId = req.user?.employee?._id || req.user?.employee;
+    
+    if (!employeeId) {
+      console.warn('Dashboard: Employee ID not found for user', req.user?._id);
+      return res.status(400).json({ message: 'Employee profile not found' });
+    }
+
     const AttendanceModel = resolveModel(req, 'Attendance', DefaultAttendance);
     const LeaveModel = resolveModel(req, 'Leave', DefaultLeave);
     const PayrollModel = resolveModel(req, 'Payroll', DefaultPayroll);
+    const ShiftModel = resolveModel(req, 'Shift', DefaultShift);
+    const EmployeeModel = resolveModel(req, 'Employee', DefaultEmployee);
 
-    // Today's attendance
+    // ✅ Get today's attendance (without shift filter first)
     const today = moment().startOf('day');
+    const todayEnd = moment(today).endOf('day');
+    
     const todaysAttendance = await AttendanceModel.findOne({
       employee: employeeId,
       date: {
         $gte: today.toDate(),
-        $lte: moment(today).endOf('day').toDate()
+        $lte: todayEnd.toDate()
       }
-    });
+    }).sort({ createdAt: -1 }); // Get latest if multiple
 
-    // Monthly attendance summary
+    // ✅ If no attendance found, return null
+    // ✅ Get employee with shift info for today
+    const employee = await EmployeeModel.findById(employeeId);
+    let todaysShift = null;
+    
+    if (employee) {
+      const shiftResult = await employee.getEffectiveShift({ Shift: ShiftModel });
+      todaysShift = shiftResult.shift;
+    }
+
+    // ✅ Monthly attendance summary
     const startDate = moment().startOf('month').toDate();
     const endDate = moment().endOf('month').toDate();
 
@@ -147,9 +167,7 @@ exports.getEmployeeDashboard = async (req, res) => {
     const halfDays = monthlyAttendance.filter(a => a.status === 'half-day').length;
     const totalWorkingHours = monthlyAttendance.reduce((sum, a) => sum + (Number(a.workingHours) || 0), 0);
     const workedEntries = monthlyAttendance.filter(a => workedStatuses.includes(a.status) || (a.checkIn && a.checkOut));
-    const averageHours = workedEntries.length > 0
-      ? totalWorkingHours / workedEntries.length
-      : 0;
+    const averageHours = workedEntries.length > 0 ? totalWorkingHours / workedEntries.length : 0;
 
     // Leave stats
     const employeeObjectId = mongoose.isValidObjectId(employeeId)
@@ -187,8 +205,25 @@ exports.getEmployeeDashboard = async (req, res) => {
       .sort({ startDate: 1 })
       .limit(3);
 
+    // ✅ Return formatted response
     res.json({
-      todaysAttendance,
+      todaysAttendance: todaysAttendance ? {
+        _id: todaysAttendance._id,
+        checkIn: todaysAttendance.checkIn,
+        checkOut: todaysAttendance.checkOut,
+        status: todaysAttendance.status,
+        workingHours: todaysAttendance.workingHours || 0,
+        checkInPlace: todaysAttendance.checkInPlace,
+        checkOutPlace: todaysAttendance.checkOutPlace,
+        isLateCheckIn: todaysAttendance.isLateCheckIn,
+        shiftName: todaysAttendance.shiftName
+      } : null,
+      todaysShift: todaysShift ? {
+        _id: todaysShift._id,
+        name: todaysShift.displayName,
+        startTime: todaysShift.startTime,
+        endTime: todaysShift.endTime
+      } : null,
       monthlyStats: {
         presentDays,
         halfDays,
@@ -202,6 +237,6 @@ exports.getEmployeeDashboard = async (req, res) => {
     });
   } catch (error) {
     console.error('Get employee dashboard error:', error);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ message: 'Server error', error: error.message });
   }
 };

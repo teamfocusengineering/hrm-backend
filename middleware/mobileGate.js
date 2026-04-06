@@ -68,9 +68,20 @@ module.exports = async function mobileGate(req, res, next) {
     }
 
     // Resolve user model from req.models (tenant-aware) or default
-    const UserModel = (req.models && req.models.User) ? req.models.User : DefaultUser;
-
-    const user = await UserModel.findById(decoded.id);
+    let UserModel;
+        try {
+            UserModel = (req.models && req.models.User) ? req.models.User : DefaultUser;
+            if (!UserModel.findById) {
+              console.warn('UserModel.findById not available, skipping mobile gate check');
+              return next();
+      
+          }
+      } catch (e) {
+            console.warn('Error resolving UserModel:', e.message);
+            return next();
+      
+        }
+        const user = await UserModel.findById(decoded.id);
     if (!user) return res.status(401).json({ message: 'User not found' });
 
     // Admins always allowed; otherwise require explicit mobileAllowed flag

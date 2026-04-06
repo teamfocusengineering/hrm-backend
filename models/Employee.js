@@ -100,11 +100,40 @@ const employeeSchema = new mongoose.Schema({
       default: Date.now
     }
   }],
-  isActive: {
+  assignedShift: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Shift',
+    default: null
+  },
+  shiftSource: {
+    type: String,
+    enum: ['admin', 'role', 'department', 'default', 'requested', null],
+    default: null
+  },
+  shiftAssignedAt: {
+    type: Date,
+    default: null
+  },
+  shiftAssignedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
+  },
+isActive: {
     type: Boolean,
     default: true
-  }
-  
+  },
+  teamLead: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Employee'
+  },
+  teamMembers: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Employee'
+  }],
+  departmentShiftRequired: {
+    type: Boolean,
+    default: false
+  },
 }, {
   timestamps: true
 });
@@ -124,7 +153,56 @@ employeeSchema.virtual('fullAddress').get(function() {
   return `${this.address.street}, ${this.address.city}, ${this.address.state} ${this.address.zipCode}, ${this.address.country}`;
 });
 
+
+employeeSchema.methods.getEffectiveShift = async function(models) {
+  const { Shift } = models;
+  const result = await Shift.findShiftForEmployee(this, models);
+  return result;
+};
+
+employeeSchema.methods.canCheckIn = async function(models, currentTime = new Date()) {
+  const { Shift } = models;
+  const result = await this.getEffectiveShift(models);
+  
+  if (!result.shift) {
+    // No shift assigned - allow check-in with default rules
+    return { canCheckIn: true, shift: null, shiftSource: null, message: 'No shift assigned' };
+  }
+  
+  const status = result.shift.getShiftStatus(currentTime, 'checkin');
+  return {
+    canCheckIn: status.canCheckIn,
+    shift: result.shift,
+    shiftSource: result.source,
+    status: status.status,
+    message: status.message,
+    isLate: status.isLate || false
+  };
+};
+
+employeeSchema.methods.canCheckOut = async function(models, currentTime = new Date()) {
+  const { Shift } = models;
+  const result = await this.getEffectiveShift(models);
+  
+  if (!result.shift) {
+    return { canCheckOut: true, shift: null, shiftSource: null, message: 'No shift assigned' };
+  }
+  
+  const status = result.shift.getShiftStatus(currentTime, 'checkout');
+  return {
+    canCheckOut: status.canCheckOut,
+    shift: result.shift,
+    shiftSource: result.source,
+    status: status.status,
+    message: status.message,
+    isEarly: status.isEarly || false
+  };
+};
+
 // Ensure virtual fields are serialized
+employeeSchema.index({ teamLead: 1 });
+employeeSchema.index({ 'teamMembers': 1 });
+
 employeeSchema.set('toJSON', { virtuals: true });
 
 module.exports = employeeSchema;

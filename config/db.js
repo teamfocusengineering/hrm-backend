@@ -4,6 +4,9 @@ const mongoose = require('mongoose');
 // Each entry is: tenantId => { conn: mongoose.Connection, lastUsed: number }
 const tenantConnections = new Map();
 let mainDBConnection = null;
+const ShiftSchema = require('../models/Shift');
+const DepartmentSettingSchema = require('../models/DepartmentSetting');
+
 
 // Global connection pool & cache settings (tune via env)
 const MAX_TOTAL_CONNECTIONS = parseInt(process.env.TENANT_DB_MAX_CONNECTIONS || '100', 10);
@@ -275,6 +278,7 @@ const initializeTenantDatabase = async (tenantConnection) => {
   const ProjectSchema = require('../models/Project');
   const TaskSchema = require('../models/Task');
   const NotificationSchema = require('../models/Notification');
+  const ShiftSchema = require('../models/Shift'); 
     
     // Register models with the tenant connection
     // Use try-catch for each model to avoid blocking if one fails
@@ -300,6 +304,8 @@ const initializeTenantDatabase = async (tenantConnection) => {
   registerModel('Project', ProjectSchema);
   registerModel('Task', TaskSchema);
   registerModel('Notification', NotificationSchema);
+  registerModel('Shift', ShiftSchema); 
+  registerModel('DepartmentSetting', DepartmentSettingSchema);
     
     console.log('✅ Tenant database models initialized');
   } catch (error) {
@@ -354,6 +360,9 @@ const getTenantModels = async (tenantConnection) => {
       Project: conn.model('Project'),
       Task: conn.model('Task'),
       Notification: conn.model('Notification'),
+      Shift: conn.model('Shift'),
+      DepartmentSetting: conn.model('DepartmentSetting'),
+      Shift: tenantConnection.model('Shift', require('../models/Shift')),
   };
 };
 
@@ -494,6 +503,37 @@ const cleanupStaleConnections = async () => {
   }
 };
 
+// Get default models for fallback (non-tenant requests)
+const getDefaultModels = () => {
+  const schemas = {
+    User: require('../models/User'),
+    Employee: require('../models/Employee'),
+    Attendance: require('../models/Attendance'),
+    Leave: require('../models/Leave'),
+    Payroll: require('../models/Payroll'),
+    Company: require('../models/Company'),
+    Permission: require('../models/Permission'),
+    Project: require('../models/Project'),
+    Task: require('../models/Task'),
+    Notification: require('../models/Notification'),
+    Shift: require('../models/Shift'),
+    DepartmentSetting: require('../models/DepartmentSetting'),
+  };
+
+  const defaultConn = mainDBConnection || mongoose.connection;
+  
+  const models = {};
+  for (const [name, schema] of Object.entries(schemas)) {
+    try {
+      models[name] = defaultConn.model(name, schema);
+    } catch (err) {
+      console.warn(`⚠️ Failed to create default model ${name}:`, err.message);
+    }
+  }
+  
+  return models;
+};
+
 // Run cleanup every 5 minutes
 setInterval(cleanupStaleConnections, 5 * 60 * 1000);
 
@@ -504,6 +544,7 @@ module.exports = {
   getTenantModels,
   getTenantModelsById,
   getSuperAdminModels,
+  getDefaultModels,
   checkDatabaseHealth,
   cleanupStaleConnections,
   mainDB: () => mainDBConnection,

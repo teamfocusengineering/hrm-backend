@@ -49,7 +49,7 @@ const attendanceSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['present', 'absent', 'half-day', 'present-with-permission'],
+    enum: ['present', 'absent', 'half-day', 'present-with-permission', 'on-permission'],
     default: 'present'
   },
   permissions: [{
@@ -68,36 +68,92 @@ const attendanceSchema = new mongoose.Schema({
   adjustedHours: {
     type: Number,
     default: 0
+  },
+   shift: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Shift',
+    default: null
+  },
+  shiftSource: {
+    type: String,
+    enum: ['user', 'role', 'department', 'default', 'requested', null],
+    default: null
+  },
+  shiftName: {
+    type: String,
+    default: null
+  },
+  isLateCheckIn: {
+    type: Boolean,
+    default: false
+  },
+  isEarlyCheckOut: {
+    type: Boolean,
+    default: false
+  },
+  checkInStatus: {
+    type: String,
+    enum: ['on-time', 'late', 'early', null],
+    default: null
+  },
+  checkOutStatus: {
+    type: String,
+    enum: ['on-time', 'early', 'late', null],
+    default: null
   }
 }, {
   timestamps: true
-});
+},
 
-// Calculate working hours before saving
+);
+
+// Calculate working hours before saving (exclude permission overlaps)
 attendanceSchema.pre('save', function(next) {
   try {
-    if (this.checkOut) {
+    if (this.checkIn && this.checkOut && this.permissions && this.permissions.length > 0) {
+      const checkIn = moment(this.checkIn);
+      const checkOut = moment(this.checkOut);
+      const rawHours = checkOut.diff(checkIn, 'hours', true);
+      this.workingHours = rawHours;
+      
+      let permissionOverlapHours = 0;
+      
+      // Calculate overlap between checkin-checkout and each permission
+      this.permissions.forEach(p => {
+        if (p.startTime && p.endTime) {
+          const permStart = moment(p.startTime);
+          const permEnd = moment(p.endTime);
+          
+          const overlapStart = moment.max(checkIn, permStart);
+          const overlapEnd = moment.min(checkOut, permEnd);
+          
+          if (overlapStart.isBefore(overlapEnd)) {
+            permissionOverlapHours += overlapEnd.diff(overlapStart, 'hours', true);
+          }
+        }
+      });
+      
+      this.adjustedHours = Math.max(0, rawHours - permissionOverlapHours);
+      
+      // Updated status logic
+      if (this.adjustedHours === 0 && permissionOverlapHours > 0) {
+        this.status = 'on-permission';
+      } else if (this.adjustedHours < 4) {
+        this.status = 'half-day';
+      } else if (permissionOverlapHours > 0) {
+        this.status = 'present-with-permission';
+      } else {
+        this.status = 'present';
+      }
+    } else if (this.checkOut) {
+      // No permissions, normal calculation
       const diff = this.checkOut - this.checkIn;
       const rawHours = (diff / (1000 * 60 * 60)).toFixed(2);
       this.workingHours = parseFloat(rawHours);
+      this.adjustedHours = this.workingHours;
       
-      // Calculate adjusted hours considering permissions
-      let totalPermissionHours = 0;
-      if (this.permissions && this.permissions.length > 0) {
-        this.permissions.forEach(p => {
-          if (p.duration) {
-            totalPermissionHours += p.duration;
-          }
-        });
-      }
-      
-      this.adjustedHours = this.workingHours + totalPermissionHours;
-      
-      // Update status based on adjusted hours
       if (this.adjustedHours < 4) {
         this.status = 'half-day';
-      } else if (this.adjustedHours >= 4 && this.adjustedHours < 8) {
-        this.status = 'present-with-permission';
       } else {
         this.status = 'present';
       }
@@ -108,7 +164,7 @@ attendanceSchema.pre('save', function(next) {
   next();
 });
 
-// Compound index to ensure one attendance per employee per day
-attendanceSchema.index({ employee: 1, date: 1 }, { unique: true });
+// Compound index to ensure one attendance per employee per day per shift (allows multiple shifts/day)
+attendanceSchema.index({ employee: 1, date: 1, shift: 1 }, { unique: true });
 
 module.exports = attendanceSchema;

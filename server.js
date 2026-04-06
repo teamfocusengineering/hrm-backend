@@ -37,7 +37,8 @@ const startServer = async () => {
         'https://hrm-super-admin.pages.dev',
         'http://localhost:5173',
         'http://localhost:5174',
-        'http://localhost:5175'
+        'http://localhost:5175',
+        
       ];
       
       // Allow requests with no origin (like mobile apps or curl requests)
@@ -87,7 +88,13 @@ const startServer = async () => {
   // more specific endpoints (like /my-updates/today) are matched first.
   app.use('/api/tasks', require('./routes/taskProgress'));
   app.use('/api/tasks', require('./routes/tasks'));
-  app.use('/api/notifications', require('./routes/notifications'));
+app.use('/api/notifications', require('./routes/notifications'));
+app.use('/api/team', require('./routes/team'));
+app.use('/api/department-settings', require('./routes/departmentSettings'));
+
+
+//shift routes 
+app.use('/api/shifts', require('./routes/shiftRoutes'));
 
   // Health check endpoint
   app.get('/api/health', (req, res) => {
@@ -115,10 +122,48 @@ const startServer = async () => {
     res.status(404).json({ message: 'Route not found' });
   });
 
+  const jwt = require('jsonwebtoken');
+  const http = require('http');
+  const { Server } = require('socket.io');
+
   const PORT = process.env.PORT || 5000;
 
-  app.listen(PORT, () => {
+  const server = http.createServer(app);
+
+  const io = new Server(server, {
+    cors: {
+      origin: true,
+      methods: ["GET", "POST"],
+      credentials: true
+    }
+  });
+
+  io.use((socket, next) => {
+    const token = socket.handshake.auth.token || socket.handshake.headers.authorization?.replace('Bearer ', '');
+    if (!token) {
+      return next(new Error('No token'));
+    }
+    try {
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      socket.user = decoded;
+      socket.join(`user_${decoded.id}`);
+      next();
+    } catch (err) {
+      next(new Error('Invalid token'));
+    }
+  });
+
+  io.on('connection', (socket) => {
+    console.log(`🔌 Connected: user ${socket.user.id}`);
+    socket.emit('connected', { type: 'connected' });
+    socket.on('disconnect', () => console.log(`🔌 Disconnected: user ${socket.user.id}`));
+  });
+
+  global.io = io;
+
+  server.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
+    console.log(`Socket.io ready for notifications`);
     console.log(`Multi-tenant HRM SaaS ready`);
   });
 };

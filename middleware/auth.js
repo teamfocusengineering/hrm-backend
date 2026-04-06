@@ -15,6 +15,8 @@ exports.protect = async (req, res, next) => {
 
   if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
     token = req.headers.authorization.split(' ')[1];
+  } else if (req.query.token) {
+    token = req.query.token.startsWith('Bearer ') ? req.query.token.split(' ')[1] : req.query.token;
   }
 
   if (!token) {
@@ -61,6 +63,9 @@ exports.authorize = (...roles) => {
     next();
   };
 };
+
+// @desc    Shorthand for admin only access
+exports.adminOnly = exports.authorize('admin');
 
 // Super admin authentication
 exports.superAdminAuth = async (req, res, next) => {
