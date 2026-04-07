@@ -282,7 +282,16 @@ exports.updatePermissionStatus = async (req, res) => { // Admin approval
       approverType: 'admin'
     });
 
-    permission.updateStatusFromApprovals();
+    // Directly compute status: any approval = approved, any rejection = rejected
+    const hasRejection = permission.approvals.some(a => a.status === 'rejected');
+    const anyApproval = permission.approvals.some(a => a.status === 'approved');
+    if (hasRejection) {
+      permission.status = 'rejected';
+    } else if (anyApproval) {
+      permission.status = 'approved';
+    } else {
+      permission.status = 'pending';
+    }
 
     await permission.save();
 
@@ -307,6 +316,8 @@ exports.updatePermissionStatus = async (req, res) => { // Admin approval
           message: `Admin ${status} your permission request (${permission.status})`,
           relatedEntity: 'permission',
           entityId: permission._id,
+          employee: permission.employee._id,
+          title: 'Permission Update',
           isRead: false
         });
 
@@ -336,6 +347,8 @@ exports.updatePermissionStatus = async (req, res) => { // Admin approval
             message: 'Your permission request has been fully approved!',
             relatedEntity: 'permission',
             entityId: permission._id,
+            employee: permission.employee._id,
+            title: 'Permission Approved',
             isRead: false
           });
 
@@ -477,17 +490,22 @@ exports.updateLeadPermissionStatus = async (req, res) => { // Dual approval
       approverType: 'lead'
     });
 
-    permission.updateStatusFromApprovals();
+    // Directly compute status: any approval = approved, any rejection = rejected
+    const hasRejectionL = permission.approvals.some(a => a.status === 'rejected');
+    const anyApprovalL = permission.approvals.some(a => a.status === 'approved');
+    if (hasRejectionL) {
+      permission.status = 'rejected';
+    } else if (anyApprovalL) {
+      permission.status = 'approved';
+    } else {
+      permission.status = 'pending';
+    }
 
     await permission.save();
 
     await permission.populate('approvals.approver', 'name position');
     await permission.populate('employee', 'name email department');
 
-    /*
-    // TEMP COMMENTED: Notification schema validation issues (invalid type/relatedEntity enums)
-    // TODO: Add 'permission_status', 'permission_review' to Notification.type enum & 'permission' to relatedEntity
-    
     // Employee notification
     try {
       const Notification = resolveModel(req, 'Notification', DefaultNotification);
@@ -496,11 +514,12 @@ exports.updateLeadPermissionStatus = async (req, res) => { // Dual approval
       if (employeeUser) {
         await Notification.create({
           user: employeeUser._id,
-          employee: permission.employee._id,  // Fixed required
+          employee: permission.employee._id,
           title: 'Permission Update',
           message: `Lead ${status} your permission request (Status: ${permission.status})`,
-          type: 'general',
+          type: 'permission_status',
           tenant: req.tenant._id,
+          relatedEntity: 'permission',
           entityId: permission._id,
           isRead: false
         });
@@ -522,6 +541,7 @@ exports.updateLeadPermissionStatus = async (req, res) => { // Dual approval
           message: `Lead ${status} ${permission.employee.name}'s ${permission.permissionType} (${permission.status})`,
           type: 'general',
           tenant: req.tenant._id,
+          relatedEntity: 'permission',
           entityId: permission._id,
           isRead: false
         });
@@ -529,7 +549,6 @@ exports.updateLeadPermissionStatus = async (req, res) => { // Dual approval
     } catch (err) {
       console.error('Admin notification failed:', err);
     }
-    */
 
     // If now approved (both), notify employee final status
     if (permission.status === 'approved') {
@@ -542,6 +561,8 @@ exports.updateLeadPermissionStatus = async (req, res) => { // Dual approval
           message: 'Your permission request has been fully approved!',
           relatedEntity: 'permission',
           entityId: permission._id,
+          employee: permission.employee._id,
+          title: 'Permission Approved',
           isRead: false
         });
       } catch (err) {
@@ -560,3 +581,24 @@ exports.updateLeadPermissionStatus = async (req, res) => { // Dual approval
 // Helper function (DISABLED - manual checkin required)
 // const updateAttendanceWithPermission = async (req, permission) => { ... };
 
+// @desc    Fix stale permission records (status='pending' but has approvals)
+// @route   POST /api/permissions/fix-stale
+// @access  Private/Admin
+exports.fixStalePermissions = async (req, res) => {
+  try {
+    const PermissionModel = resolveModel(req, 'Permission', DefaultPermission);
+    // Find all 'pending' records that actually have an approval entry
+    const stale = await PermissionModel.find({ status: 'pending', 'approvals.0': { $exists: true } });
+    let fixed = 0;
+    for (const perm of stale) {
+      const hasRejection = perm.approvals.some(a => a.status === 'rejected');
+      const anyApproval = perm.approvals.some(a => a.status === 'approved');
+      if (hasRejection) { perm.status = 'rejected'; await perm.save(); fixed++; }
+      else if (anyApproval) { perm.status = 'approved'; await perm.save(); fixed++; }
+    }
+    res.json({ message: `Fixed ${fixed} of ${stale.length} stale permission records.` });
+  } catch (error) {
+    console.error('Fix stale permissions error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};

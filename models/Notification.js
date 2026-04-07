@@ -23,12 +23,12 @@ const notificationSchema = new mongoose.Schema({
   },
   type: {
     type: String,
-    enum: ['task-assigned', 'task-updated', 'project-assigned', 'deadline-reminder', 'leave_request', 'permission_request', 'general'],
+    enum: ['task-assigned', 'task-updated', 'project-assigned', 'deadline-reminder', 'leave_request', 'permission_request', 'permission_status', 'permission_approved', 'general'],
     default: 'general'
   },
   relatedEntity: {
     type: String,
-    enum: ['project', 'task']
+    enum: ['project', 'task', 'permission', 'leave']
   },
   entityId: {
     type: mongoose.Schema.Types.ObjectId

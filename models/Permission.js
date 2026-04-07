@@ -86,14 +86,16 @@ permissionSchema.pre('save', function(next) {
 });
 
 // Update status based on approvals
+// Single approval is enough — if anyone (lead or admin) approves, permission is approved.
+// Rejection by anyone immediately rejects the permission.
 permissionSchema.methods.updateStatusFromApprovals = function() {
-  const leadApproval = this.approvals.find(a => a.approverType === 'lead' && a.status === 'approved');
-  const adminApproval = this.approvals.find(a => a.approverType === 'admin' && a.status === 'approved');
-  
-  if (leadApproval && adminApproval) {
-    this.status = 'approved';
-  } else if (this.approvals.some(a => a.status === 'rejected')) {
+  const hasRejection = this.approvals.some(a => a.status === 'rejected');
+  const anyApproval = this.approvals.some(a => a.status === 'approved');
+
+  if (hasRejection) {
     this.status = 'rejected';
+  } else if (anyApproval) {
+    this.status = 'approved';
   } else {
     this.status = 'pending';
   }
