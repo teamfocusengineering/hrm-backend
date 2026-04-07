@@ -136,6 +136,7 @@ shiftSchema.methods.hasEmployee = function(employeeId) {
 };
 
 // Method: Get shift status based on current time
+// Method: Get shift status based on current time
 shiftSchema.methods.getShiftStatus = function(currentTime, type = 'checkin') {
   const [startHour, startMinute] = this.startTime.split(':').map(Number);
   const [endHour, endMinute] = this.endTime.split(':').map(Number);
@@ -147,9 +148,47 @@ shiftSchema.methods.getShiftStatus = function(currentTime, type = 'checkin') {
   let startMinutes = startHour * 60 + startMinute;
   let endMinutes = endHour * 60 + endMinute;
   
+  // Calculate shift end time (handle overnight)
+  let endMinutesAdjusted = endMinutes;
+  let startMinutesAdjusted = startMinutes;
+  let currentMinutesAdjusted = currentMinutes;
+  
+  // Handle overnight shifts (end time < start time means crosses midnight)
+  const isOvernight = endMinutes < startMinutes;
+  
+  if (isOvernight) {
+    endMinutesAdjusted = endMinutes + (24 * 60);
+    // For overnight shifts, adjust current time if it's after midnight but before shift end
+    if (currentMinutes < startMinutes && currentMinutes < endMinutes) {
+      currentMinutesAdjusted = currentMinutes + (24 * 60);
+    }
+  }
+  
   if (type === 'checkin') {
+    // ✅ CRITICAL FIX: Check if shift has already ended (for regular shifts)
+    if (!isOvernight && currentMinutes > endMinutes) {
+      return { 
+        canCheckIn: false, 
+        status: 'shift-ended', 
+        message: `Shift ended at ${this.endTime}. Cannot check in after shift ends.`,
+        isLate: false,
+        isHalfDay: false
+      };
+    }
+    
+    // For overnight shifts, check if current time is after shift end (next day)
+    if (isOvernight && currentMinutesAdjusted > endMinutesAdjusted) {
+      return { 
+        canCheckIn: false, 
+        status: 'shift-ended', 
+        message: `Shift ended at ${this.endTime} (next day). Cannot check in after shift ends.`,
+        isLate: false,
+        isHalfDay: false
+      };
+    }
+    
     // Handle night shift check-in window
-    if (this.isNightShift) {
+    if (this.isNightShift || isOvernight) {
       // Night shift check-in window: 
       // - Evening: From 6 PM (18:00) to midnight (24:00)
       // - Early morning: From midnight (00:00) to shift start + late marking
@@ -168,20 +207,34 @@ shiftSchema.methods.getShiftStatus = function(currentTime, type = 'checkin') {
       }
     }
     
-    const lateAfter = startMinutes + this.lateMarkingAfter;
-    const halfDayAfter = startMinutes + this.halfDayMarkingAfter;
+    const lateAfter = startMinutesAdjusted + this.lateMarkingAfter;
+    const halfDayAfter = startMinutesAdjusted + this.halfDayMarkingAfter;
     
     // For night shift, if checking in during early morning hours (after midnight),
     // we need to add 24 hours to startMinutes for proper comparison
-    let adjustedCurrentMinutes = currentMinutes;
-    if (this.isNightShift && currentHour < startHour && currentHour < 12) {
-      adjustedCurrentMinutes = currentMinutes + (24 * 60); // Add 24 hours
+    let adjustedCurrentMinutes = currentMinutesAdjusted;
+    if (isOvernight && currentHour < startHour && currentHour < 12) {
+      adjustedCurrentMinutes = currentMinutesAdjusted;
+    }
+    
+    // ✅ Check if too early (before grace period starts)
+    const graceStartMinutes = startMinutesAdjusted - this.gracePeriod;
+    if (adjustedCurrentMinutes < graceStartMinutes) {
+      const graceStartHour = Math.floor(graceStartMinutes / 60) % 24;
+      const graceStartMinute = graceStartMinutes % 60;
+      return { 
+        canCheckIn: false, 
+        status: 'too-early', 
+        message: `Too early! Check-in window opens at ${graceStartHour.toString().padStart(2, '0')}:${graceStartMinute.toString().padStart(2, '0')}`,
+        isLate: false,
+        isHalfDay: false
+      };
     }
     
     if (adjustedCurrentMinutes > halfDayAfter) {
       return { 
         canCheckIn: true,        
-        status: 'half-day',      
+        status: 'late',      
         message: 'Late check-in - will be marked as half day',
         isLate: true,
         isHalfDay: true
@@ -196,7 +249,7 @@ shiftSchema.methods.getShiftStatus = function(currentTime, type = 'checkin') {
         isHalfDay: false
       };
     }
-    if (adjustedCurrentMinutes >= startMinutes) {
+    if (adjustedCurrentMinutes >= startMinutesAdjusted) {
       return { 
         canCheckIn: true, 
         status: 'on-time', 
@@ -205,7 +258,7 @@ shiftSchema.methods.getShiftStatus = function(currentTime, type = 'checkin') {
         isHalfDay: false
       };
     }
-    if (adjustedCurrentMinutes >= startMinutes - this.gracePeriod) {
+    if (adjustedCurrentMinutes >= startMinutesAdjusted - this.gracePeriod) {
       return { 
         canCheckIn: true, 
         status: 'early', 
@@ -224,21 +277,27 @@ shiftSchema.methods.getShiftStatus = function(currentTime, type = 'checkin') {
     
   } else {
     // Checkout logic
-    // For night shift, the end time might be in the morning (next day)
-    let adjustedEndMinutes = endMinutes;
-    let adjustedCurrentMinutes = currentMinutes;
+    let adjustedEndMinutes = endMinutesAdjusted;
+    let adjustedCurrentMinutes = currentMinutesAdjusted;
     
-    if (this.isNightShift) {
-      // For night shift ending in the morning:
-      // If current hour is less than end hour, we're still in the shift (after midnight)
-      if (currentHour < endHour) {
+    // For overnight shift checkout
+    if (isOvernight) {
+      if (currentHour < endHour && currentHour < startHour) {
         adjustedCurrentMinutes = currentMinutes + (24 * 60);
       }
-      // End minutes already adjusted if endHour < startHour (overnight)
-      if (endHour < startHour) {
-        adjustedEndMinutes = endMinutes + (24 * 60);
-      }
     }
+    
+    // ✅ Check if shift hasn't started yet
+    if (adjustedCurrentMinutes < startMinutesAdjusted) {
+      return { 
+        canCheckOut: false, 
+        status: 'not-started', 
+        message: 'Shift has not started yet. Cannot check out.',
+        isEarly: false 
+      };
+    }
+    
+    // ✅ Check if already checked out (should be handled by caller)
     
     const earlyCheckoutThreshold = adjustedEndMinutes - 60;
     
@@ -265,6 +324,15 @@ shiftSchema.methods.getShiftStatus = function(currentTime, type = 'checkin') {
       isEarly: false 
     };
   }
+};
+
+// Helper method to get check-in window start time
+shiftSchema.methods.getCheckInWindowStart = function() {
+  const [startHour, startMinute] = this.startTime.split(':').map(Number);
+  const graceStartMinutes = (startHour * 60 + startMinute) - this.gracePeriod;
+  const graceStartHour = Math.floor(graceStartMinutes / 60) % 24;
+  const graceStartMinute = graceStartMinutes % 60;
+  return `${graceStartHour.toString().padStart(2, '0')}:${graceStartMinute.toString().padStart(2, '0')}`;
 };
 
 // Method: Calculate working hours for this shift

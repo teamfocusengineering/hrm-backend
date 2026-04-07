@@ -261,6 +261,7 @@ const createDatabaseName = (companyName) => {
 };
 
 // Initialize tenant database with all required collections (non-blocking)
+// Initialize tenant database with all required collections (non-blocking)
 const initializeTenantDatabase = async (tenantConnection) => {
   try {
     if (!tenantConnection || !tenantConnection.db) {
@@ -275,16 +276,15 @@ const initializeTenantDatabase = async (tenantConnection) => {
     const PayrollSchema = require('../models/Payroll');
     const CompanySchema = require('../models/Company');
     const PermissionSchema = require('../models/Permission');
-  const ProjectSchema = require('../models/Project');
-  const TaskSchema = require('../models/Task');
-  const NotificationSchema = require('../models/Notification');
-  const ShiftSchema = require('../models/Shift'); 
+    const ProjectSchema = require('../models/Project');
+    const TaskSchema = require('../models/Task');
+    const NotificationSchema = require('../models/Notification');
+    const ShiftSchema = require('../models/Shift');
+    const DepartmentSettingSchema = require('../models/DepartmentSetting');
     
     // Register models with the tenant connection
-    // Use try-catch for each model to avoid blocking if one fails
     const registerModel = (name, schema) => {
       try {
-        if (!tenantConnection.models) tenantConnection.models = {};
         if (!tenantConnection.models[name]) {
           tenantConnection.model(name, schema);
         }
@@ -300,17 +300,15 @@ const initializeTenantDatabase = async (tenantConnection) => {
     registerModel('Payroll', PayrollSchema);
     registerModel('Company', CompanySchema);
     registerModel('Permission', PermissionSchema);
-  // Register project/task/notification schemas for tenant DBs
-  registerModel('Project', ProjectSchema);
-  registerModel('Task', TaskSchema);
-  registerModel('Notification', NotificationSchema);
-  registerModel('Shift', ShiftSchema); 
-  registerModel('DepartmentSetting', DepartmentSettingSchema);
+    registerModel('Project', ProjectSchema);
+    registerModel('Task', TaskSchema);
+    registerModel('Notification', NotificationSchema);
+    registerModel('Shift', ShiftSchema);  // ✅ Only once
+    registerModel('DepartmentSetting', DepartmentSettingSchema);
     
     console.log('✅ Tenant database models initialized');
   } catch (error) {
     console.error('❌ Tenant database initialization error:', error.message);
-    // Don't throw - this is not critical for connection establishment
   }
 };
 
@@ -349,6 +347,7 @@ const getTenantModels = async (tenantConnection) => {
     throw new Error('Tenant database connection lost');
   }
 
+  // ✅ FIXED: No duplicate Shift, all models using 'conn'
   return {
     User: conn.model('User'),
     Employee: conn.model('Employee'),
@@ -356,13 +355,12 @@ const getTenantModels = async (tenantConnection) => {
     Leave: conn.model('Leave'),
     Payroll: conn.model('Payroll'),
     Company: conn.model('Company'),
-      Permission: conn.model('Permission'),
-      Project: conn.model('Project'),
-      Task: conn.model('Task'),
-      Notification: conn.model('Notification'),
-      Shift: conn.model('Shift'),
-      DepartmentSetting: conn.model('DepartmentSetting'),
-      Shift: tenantConnection.model('Shift', require('../models/Shift')),
+    Permission: conn.model('Permission'),
+    Project: conn.model('Project'),
+    Task: conn.model('Task'),
+    Notification: conn.model('Notification'),
+    Shift: conn.model('Shift'),  // ✅ Only once, using 'conn'
+    DepartmentSetting: conn.model('DepartmentSetting'),
   };
 };
 

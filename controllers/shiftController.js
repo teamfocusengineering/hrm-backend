@@ -52,23 +52,10 @@ exports.createShift = async (req, res) => {
       });
     }
 
-    // Check if shift already exists for this tenant (case-insensitive, trim whitespace)
-    const trimmedName = name.trim().toLowerCase();
-    const existingShift = await Shift.findOne({ 
-      name: trimmedName,
-      tenant: req.tenant._id 
-    });
-
-    if (existingShift) {
-      return res.status(400).json({ 
-        success: false, 
-        message: `Shift "${trimmedName}" already exists. Use a different name.` 
-      });
-    }
-
+    // Create the shift
     const shift = await Shift.create({
-      name,
-      displayName,
+      name: name.trim().toLowerCase(),
+      displayName: displayName.trim(),
       startTime,
       endTime,
       gracePeriod: gracePeriod || 15,
@@ -89,14 +76,21 @@ exports.createShift = async (req, res) => {
     });
   } catch (error) {
     console.error('Create shift error:', error);
+    
+    // Handle duplicate key error (if any unique index exists)
+    if (error.code === 11000) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'A shift with these details already exists. Please check your shift timings.'
+      });
+    }
+    
     res.status(500).json({ 
       success: false, 
-      message: 'Server error',
-      error: error.message 
+      message: 'Server error: ' + error.message
     });
   }
 };
-
 // @desc    Get all shifts with statistics
 // @route   GET /api/shifts
 // @access  Private/Admin
@@ -198,11 +192,32 @@ exports.getShift = async (req, res) => {
 // @desc    Update shift
 // @route   PUT /api/shifts/:id
 // @access  Private/Admin
+// @desc    Update shift
+// @route   PUT /api/shifts/:id
+// @access  Private/Admin
 exports.updateShift = async (req, res) => {
   try {
-    const { Shift } = getModels(req);
+    const { Shift, Attendance } = getModels(req);  // ✅ Add Attendance model
+    const { startTime, endTime, displayName } = req.body;
     
-    const shift = await Shift.findOneAndUpdate(
+    const shift = await Shift.findOne({
+      _id: req.params.id,
+      tenant: req.tenant._id
+    });
+
+    if (!shift) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Shift not found' 
+      });
+    }
+
+    // ✅ Check if timing is being changed
+    const isTimingChanged = (startTime && startTime !== shift.startTime) || 
+                            (endTime && endTime !== shift.endTime);
+    
+    // Update the shift
+    const updatedShift = await Shift.findOneAndUpdate(
       {
         _id: req.params.id,
         tenant: req.tenant._id
@@ -210,6 +225,60 @@ exports.updateShift = async (req, res) => {
       req.body,
       { new: true, runValidators: true }
     );
+
+    // ✅ If timing changed, delete ALL attendance records for this shift
+    // This prevents old attendance from showing "Completed" for new timing
+    if (isTimingChanged) {
+      const deletedCount = await Attendance.deleteMany({ 
+        shift: shift._id 
+      });
+      console.log(`🗑️ Deleted ${deletedCount.deletedCount} attendance records for shift ${shift.displayName} due to timing change`);
+    }
+
+    res.json({
+      success: true,
+      data: updatedShift,
+      message: isTimingChanged ? 
+        'Shift updated successfully. All attendance records for this shift have been reset due to timing change.' : 
+        'Shift updated successfully'
+    });
+  } catch (error) {
+    console.error('Update shift error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Server error' 
+    });
+  }
+};
+
+// @desc    Delete shift (hard delete)
+// @route   DELETE /api/shifts/:id
+// @access  Private/Admin
+exports.deleteShift = async (req, res) => {
+  try {
+    const { Shift, Employee } = getModels(req);
+    
+    // First, unassign this shift from any employees who are directly assigned to it
+    await Employee.updateMany(
+      {
+        assignedShift: req.params.id,
+        tenant: req.tenant._id
+      },
+      { 
+        $unset: { 
+          assignedShift: 1,
+          shiftSource: 1,
+          shiftAssignedAt: 1,
+          shiftAssignedBy: 1
+        }
+      }
+    );
+
+    // Completely delete the shift
+    const shift = await Shift.findOneAndDelete({
+      _id: req.params.id,
+      tenant: req.tenant._id
+    });
 
     if (!shift) {
       return res.status(404).json({ 
@@ -221,56 +290,7 @@ exports.updateShift = async (req, res) => {
     res.json({
       success: true,
       data: shift,
-      message: 'Shift updated successfully'
-    });
-  } catch (error) {
-    console.error('Update shift error:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Server error' 
-    });
-  }
-};
-
-// @desc    Delete shift (soft delete)
-// @route   DELETE /api/shifts/:id
-// @access  Private/Admin
-exports.deleteShift = async (req, res) => {
-  try {
-    const { Shift, Employee } = getModels(req);
-    
-    // Check if any employees are directly assigned to this shift
-    const employeesWithShift = await Employee.countDocuments({
-      assignedShift: req.params.id,
-      isActive: true
-    });
-
-    if (employeesWithShift > 0) {
-      return res.status(400).json({ 
-        success: false, 
-        message: `Cannot delete shift. ${employeesWithShift} employees are directly assigned to this shift. Please reassign them first.` 
-      });
-    }
-
-    const shift = await Shift.findOneAndUpdate(
-      {
-        _id: req.params.id,
-        tenant: req.tenant._id
-      },
-      { isActive: false },
-      { new: true }
-    );
-
-    if (!shift) {
-      return res.status(404).json({ 
-        success: false, 
-        message: 'Shift not found' 
-      });
-    }
-
-    res.json({
-      success: true,
-      message: 'Shift deactivated successfully'
+      message: 'Shift deleted permanently'
     });
   } catch (error) {
     console.error('Delete shift error:', error);

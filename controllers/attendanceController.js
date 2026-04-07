@@ -10,15 +10,6 @@ exports.checkIn = async (req, res) => {
     const { Attendance, Employee, Shift, DepartmentSetting } = req.models;
     const today = moment().startOf('day');
 
-    // ✅ Log incoming request
-    //console.log('Check-in request body:', req.body);
-    // console.log('Check-in location data:', {
-    //   lat: req.body.checkInLat,
-    //   lng: req.body.checkInLng,
-    //   accuracy: req.body.checkInAccuracy,
-    //   place: req.body.checkInPlace
-    // });
-
     // Get employee details
     const employee = await Employee.findById(req.user.employee._id);
     if (!employee) {
@@ -38,7 +29,6 @@ exports.checkIn = async (req, res) => {
     let shiftSource = null;
     
     if (req.body.shiftId) {
-      // Use specifically requested shift
       targetShift = await Shift.findOne({
         _id: req.body.shiftId,
         tenant: req.tenant._id,
@@ -46,7 +36,6 @@ exports.checkIn = async (req, res) => {
       });
       
       if (targetShift) {
-        // Validate if employee is assigned to this shift
         const isAssigned = (
           targetShift.assignedEmployees?.includes(employee._id) || 
           targetShift.assignedDepartments?.includes(employee.department) || 
@@ -60,125 +49,142 @@ exports.checkIn = async (req, res) => {
       }
     }
 
-    // Fallback to default effective shift if none requested or found
+    // Fallback to default effective shift
     if (!targetShift) {
-       const shiftResult = await employee.getEffectiveShift(req.models);
-       targetShift = shiftResult.shift;
-       shiftSource = shiftResult.source;
+      const shiftResult = await employee.getEffectiveShift(req.models);
+      targetShift = shiftResult.shift;
+      shiftSource = shiftResult.source;
     }
 
-    // Check if already checked in for today for THIS SPECIFIC SHIFT
-    // This allows multiple shifts per day
-    const checkInShiftId = targetShift ? targetShift._id : null;
-    
-    const existingAttendance = await Attendance.findOne({
-      employee: req.user.employee._id,
-      date: {
-        $gte: today.toDate(),
-        $lte: moment(today).endOf('day').toDate()
-      },
-      shift: checkInShiftId
-    });
-
-    if (existingAttendance && existingAttendance.checkIn) {
-      return res.status(400).json({ 
-        message: `Already checked in for ${existingAttendance.shiftName || 'this shift'} today at ${moment(existingAttendance.checkIn).format('hh:mm A')}` 
+    if (!targetShift && isShiftRequired) {
+      return res.status(400).json({
+        message: `Department "${employee.department}" requires shift assignment. Please contact administrator.`,
+        requiresShift: true
       });
     }
 
-    // Validate shift if required
-    let validationResult = { 
-      canCheckIn: true, 
-      message: 'Check-in allowed',
-      status: null,
-      isLate: false,
-      isHalfDay: false
-    };
-
-    if (isShiftRequired) {
-      if (!targetShift) {
-        return res.status(400).json({
-          message: `Department "${employee.department}" requires shift assignment. Please contact administrator.`,
-          requiresShift: true
-        });
-      }
-
+    // ✅ CRITICAL FIX: Check if shift exists and validate check-in time
+    if (targetShift) {
       const currentTime = new Date();
-      validationResult = targetShift.getShiftStatus(currentTime, 'checkin');
-
-      if (!validationResult.canCheckIn && validationResult.status !== 'half-day') {
-        return res.status(400).json({
-          message: validationResult.message,
+      const checkInStatus = targetShift.getShiftStatus(currentTime, 'checkin');
+      
+      console.log('Shift check-in validation:', {
+        shiftName: targetShift.displayName,
+        shiftStart: targetShift.startTime,
+        shiftEnd: targetShift.endTime,
+        currentTime: currentTime.toLocaleTimeString(),
+        canCheckIn: checkInStatus.canCheckIn,
+        status: checkInStatus.status,
+        message: checkInStatus.message
+      });
+      
+      // ❌ BLOCK check-in if not allowed
+      if (!checkInStatus.canCheckIn) {
+        return res.status(400).json({ 
+          message: checkInStatus.message,
           shift: {
             name: targetShift.displayName,
             startTime: targetShift.startTime,
-            endTime: targetShift.endTime
+            endTime: targetShift.endTime,
+            checkInWindow: `${targetShift.getCheckInWindowStart?.() || targetShift.startTime} - ${targetShift.endTime}`
           }
         });
       }
-    }
+      
+      // Check if already checked in for this shift today
+      const existingAttendance = await Attendance.findOne({
+        employee: req.user.employee._id,
+        date: {
+          $gte: today.toDate(),
+          $lte: moment(today).endOf('day').toDate()
+        },
+        shift: targetShift._id
+      });
 
-    // Determine attendance status
-    let attendanceStatus = 'present';
-    if (validationResult.isHalfDay) {
-      attendanceStatus = 'half-day';
-    }
+      if (existingAttendance && existingAttendance.checkIn) {
+        return res.status(400).json({ 
+          message: `Already checked in for ${targetShift.displayName} shift today at ${moment(existingAttendance.checkIn).format('hh:mm A')}` 
+        });
+      }
 
-    // ✅ Create attendance record with location
-    const attendanceData = {
-      employee: req.user.employee._id,
-      date: new Date(),
-      checkIn: new Date(),
-      shift: targetShift ? targetShift._id : null,
-      shiftSource: shiftSource,
-      shiftName: targetShift ? targetShift.displayName : null,
-      isLateCheckIn: validationResult.isLate || false,
-      checkInStatus: validationResult.status || null,
-      status: attendanceStatus
-    };
+      // Determine attendance status
+      let attendanceStatus = 'present';
+      if (checkInStatus.isHalfDay) {
+        attendanceStatus = 'half-day';
+      }
 
-    // ✅ Ensure location data is properly saved
-    if (req.body.checkInLat !== undefined && req.body.checkInLat !== null) {
-      attendanceData.checkInLat = Number(req.body.checkInLat);
-      console.log('Saving checkInLat:', attendanceData.checkInLat);
-    }
-    if (req.body.checkInLng !== undefined && req.body.checkInLng !== null) {
-      attendanceData.checkInLng = Number(req.body.checkInLng);
-      console.log('Saving checkInLng:', attendanceData.checkInLng);
-    }
-    if (req.body.checkInAccuracy !== undefined && req.body.checkInAccuracy !== null) {
-      attendanceData.checkInAccuracy = Number(req.body.checkInAccuracy);
-    }
-    if (req.body.checkInPlace) {
-      attendanceData.checkInPlace = String(req.body.checkInPlace);
-    }
+      // Create attendance record
+      const attendanceData = {
+        employee: req.user.employee._id,
+        date: new Date(),
+        checkIn: new Date(),
+        shift: targetShift._id,
+        shiftSource: shiftSource,
+        shiftName: targetShift.displayName,
+        isLateCheckIn: checkInStatus.isLate || false,
+        checkInStatus: checkInStatus.status || null,
+        status: attendanceStatus
+      };
 
-    const attendance = await Attendance.create(attendanceData);
-    
-    console.log('Attendance created successfully:', {
-      id: attendance._id,
-      checkIn: attendance.checkIn,
-      hasLocation: !!(attendance.checkInLat && attendance.checkInLng)
-    });
+      // Add location if provided
+      if (req.body.checkInLat !== undefined && req.body.checkInLat !== null) {
+        attendanceData.checkInLat = Number(req.body.checkInLat);
+        attendanceData.checkInLng = Number(req.body.checkInLng);
+        attendanceData.checkInAccuracy = Number(req.body.checkInAccuracy);
+      }
+      if (req.body.checkInPlace) {
+        attendanceData.checkInPlace = String(req.body.checkInPlace);
+      }
 
-    res.status(201).json({
-      success: true,
-      data: attendance,
-      shiftInfo: targetShift ? {
-        name: targetShift.displayName,
-        startTime: targetShift.startTime,
-        endTime: targetShift.endTime,
-        source: shiftSource,
-        status: validationResult.status,
-        isHalfDay: validationResult.isHalfDay || false
-      } : null
-    });
+      const attendance = await Attendance.create(attendanceData);
+      
+      res.status(201).json({
+        success: true,
+        data: attendance,
+        shiftInfo: {
+          name: targetShift.displayName,
+          startTime: targetShift.startTime,
+          endTime: targetShift.endTime,
+          status: checkInStatus.status,
+          isHalfDay: checkInStatus.isHalfDay || false
+        }
+      });
+    } else {
+      // No shift assigned - allow check-in with default rules
+      const existingAttendance = await Attendance.findOne({
+        employee: req.user.employee._id,
+        date: {
+          $gte: today.toDate(),
+          $lte: moment(today).endOf('day').toDate()
+        }
+      });
+
+      if (existingAttendance && existingAttendance.checkIn) {
+        return res.status(400).json({ 
+          message: `Already checked in today at ${moment(existingAttendance.checkIn).format('hh:mm A')}` 
+        });
+      }
+
+      const attendance = await Attendance.create({
+        employee: req.user.employee._id,
+        date: new Date(),
+        checkIn: new Date(),
+        status: 'present'
+      });
+
+      res.status(201).json({
+        success: true,
+        data: attendance
+      });
+    }
 
   } catch (error) {
     console.error('Check in error:', error);
     res.status(500).json({ message: 'Server error: ' + error.message });
   }
 };
+
+
 // @desc    Check out employee (with shift validation)
 // @route   POST /api/attendance/checkout
 // @access  Private
@@ -483,6 +489,10 @@ exports.getTodayShiftsStatus = async (req, res) => {
 
     const employee = await Employee.findById(req.user.employee._id);
     
+    if (!employee) {
+      return res.status(404).json({ success: false, message: 'Employee not found' });
+    }
+    
     // Get ALL shifts applicable to this employee
     const applicableShifts = await Shift.find({
       tenant: req.tenant._id,
@@ -494,7 +504,7 @@ exports.getTodayShiftsStatus = async (req, res) => {
       ]
     }).sort({ startTime: 1 });
 
-    // Get today's attendance records
+    // Get ALL today's attendance records for this employee
     const todayAttendances = await Attendance.find({
       employee: req.user.employee._id,
       date: {
@@ -503,15 +513,38 @@ exports.getTodayShiftsStatus = async (req, res) => {
       }
     });
 
-    // Build shift statuses
+    console.log('Today attendances found:', todayAttendances.length);
+    todayAttendances.forEach(att => {
+      console.log(`- Shift: ${att.shiftName}, CheckIn: ${!!att.checkIn}, CheckOut: ${!!att.checkOut}`);
+    });
+
+    // Build shift statuses - EACH SHIFT INDEPENDENTLY
     const shiftsWithStatus = applicableShifts.map(shift => {
+      // Find attendance for THIS SPECIFIC shift only
       const attendance = todayAttendances.find(a => 
         a.shift?.toString() === shift._id.toString()
       );
       
+      // Determine status for THIS shift only
+      let status = 'pending';
+      let canCheckIn = false;
+      let canCheckOut = false;
+      
+      if (attendance) {
+        if (attendance.checkOut) {
+          status = 'completed';  // This specific shift is completed
+        } else if (attendance.checkIn) {
+          status = 'checked_in';  // This specific shift is active
+          canCheckOut = true;
+        }
+      } else {
+        // No attendance for this shift yet - check if check-in is allowed
+        const checkInStatus = shift.getShiftStatus(now, 'checkin');
+        canCheckIn = checkInStatus.canCheckIn;
+      }
+      
+      // Check if shift can be checked in (time window)
       const checkInStatus = shift.getShiftStatus(now, 'checkin');
-      const checkOutStatus = attendance?.checkIn ? 
-        shift.getShiftStatus(now, 'checkout') : null;
       
       return {
         _id: shift._id,
@@ -519,13 +552,11 @@ exports.getTodayShiftsStatus = async (req, res) => {
         startTime: shift.startTime,
         endTime: shift.endTime,
         isNightShift: shift.isNightShift || false,
-        status: attendance ? 
-          (attendance.checkOut ? 'completed' : 'checked_in') : 
-          'pending',
+        status: status,
         checkIn: attendance?.checkIn,
         checkOut: attendance?.checkOut,
-        canCheckIn: !attendance && checkInStatus.canCheckIn,
-        canCheckOut: attendance && !attendance.checkOut && checkOutStatus?.canCheckOut,
+        canCheckIn: canCheckIn && status === 'pending',
+        canCheckOut: canCheckOut,
         checkInWindow: checkInStatus,
         workingHours: attendance?.workingHours
       };
@@ -536,6 +567,10 @@ exports.getTodayShiftsStatus = async (req, res) => {
     
     // Find next pending shift that can be checked in
     const nextShift = shiftsWithStatus.find(s => s.status === 'pending' && s.canCheckIn);
+
+    console.log('Shift statuses:', shiftsWithStatus.map(s => ({ name: s.name, status: s.status, canCheckIn: s.canCheckIn })));
+    console.log('Active shift:', activeShift?.name);
+    console.log('Next shift:', nextShift?.name);
 
     res.json({
       success: true,
