@@ -140,12 +140,25 @@ isActive: {
 
 // Generate employee ID before saving
 employeeSchema.pre('save', async function(next) {
-  if (this.isNew && !this.employeeId) {
+  if (!this.isNew || this.employeeId) return next();
+
+  try {
     const year = new Date().getFullYear();
-    const count = await this.constructor.countDocuments();
-    this.employeeId = `EMP${year}${(count + 1).toString().padStart(4, '0')}`;
+    const counterId = `employeeId_${year}`;
+
+    // ✅ Atomic: findOneAndUpdate with $inc guarantees no two docs get same seq
+    const Counter = this.db.model('Counter');
+    const counter = await Counter.findOneAndUpdate(
+      { _id: counterId },
+      { $inc: { seq: 1 } },
+      { new: true, upsert: true }
+    );
+
+    this.employeeId = `EMP${year}${counter.seq.toString().padStart(4, '0')}`;
+    next();
+  } catch (err) {
+    next(err);
   }
-  next();
 });
 
 // Virtual for full address
