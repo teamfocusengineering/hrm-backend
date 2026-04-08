@@ -4,31 +4,20 @@ const { validationResult } = require('express-validator');
 // @route   POST /api/employees
 // @access  Private/Admin
 exports.createEmployee = async (req, res) => {
+  let employee = null; // track for cleanup
+
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       return res.status(400).json({ errors: errors.array() });
     }
 
-    const { 
-      name, 
-      email, 
-      password, 
-      role, 
-      department, 
-      position, 
-      salary,
-      phone,
-      dateOfBirth,
-      gender,
-      address,
-      employmentType,
-      workMode,
-      teamLead,
-      teamMembers
+    const {
+      name, email, password, role, department, position, salary,
+      phone, dateOfBirth, gender, address, employmentType, workMode,
+      teamLead, teamMembers
     } = req.body;
 
-    // Use tenant-specific models
     const Employee = req.models.Employee;
     const User = req.models.User;
 
@@ -38,37 +27,28 @@ exports.createEmployee = async (req, res) => {
       return res.status(400).json({ message: 'Employee already exists with this email' });
     }
 
-    // Validate teamLead if provided
+    // Validate teamLead before creating employee
     if (teamLead) {
       const teamLeadEmp = await Employee.findById(teamLead);
       if (!teamLeadEmp) {
         return res.status(400).json({ message: 'Invalid teamLead ID' });
       }
-      if (teamLeadEmp._id.toString() === employee._id.toString()) {
-        return res.status(400).json({ message: 'Employee cannot be their own team lead' });
-      }
+      // ✅ Can't check against employee._id here (not created yet) — skip self-check
+      // Self-check can be done after creation if needed
     }
 
     // Create employee record
-    const employee = await Employee.create({
-      name,
-      email,
-      department,
-      position,
-      salary,
-      phone,
-      dateOfBirth,
-      gender,
-      address,
-      employmentType,
+    employee = await Employee.create({
+      name, email, department, position, salary, phone,
+      dateOfBirth, gender, address, employmentType,
       workMode: workMode || 'wfo',
       tenant: req.tenant._id,
       teamLead: teamLead || undefined,
       teamMembers: teamMembers || []
     });
 
-    // Auto-create department setting if it doesn't exist
-    if (department && req.tenant && req.tenant._id) {
+    // Auto-create department setting
+    if (department && req.tenant?._id) {
       const DepartmentSetting = req.models.DepartmentSetting;
       try {
         await DepartmentSetting.findOneAndUpdate(
@@ -81,13 +61,13 @@ exports.createEmployee = async (req, res) => {
       }
     }
 
-    // Create user account for the employee
+    // Create user account — this is where E11000 on employeeId can bubble up
     const user = await User.create({
       email,
       password: password || 'default123',
       role: role || 'employee',
       employee: employee._id,
-      tenant: req.tenant._id // Add tenant reference
+      tenant: req.tenant._id
     });
 
     res.status(201).json({
@@ -104,15 +84,29 @@ exports.createEmployee = async (req, res) => {
       joiningDate: employee.joiningDate,
       isActive: employee.isActive
     });
+
   } catch (error) {
     console.error('Create employee error:', error);
-    
-    // Clean up if employee was created but user creation failed
-    if (error.name === 'MongoServerError' && error.code === 11000) {
-      const Employee = req.models.Employee;
-      await Employee.deleteOne({ email: req.body.email });
+
+    // ✅ Clean up employee by _id if it was created before the error
+    if (employee?._id) {
+      try {
+        await req.models.Employee.deleteOne({ _id: employee._id });
+        console.log('Rolled back employee creation for:', employee._id);
+      } catch (cleanupErr) {
+        console.error('Failed to rollback employee creation:', cleanupErr);
+      }
     }
-    
+
+    // ✅ Return specific message for duplicate key errors
+    if (error.name === 'MongoServerError' && error.code === 11000) {
+      const duplicatedField = Object.keys(error.keyValue || {})[0] || 'field';
+      return res.status(409).json({
+        message: `Duplicate value for ${duplicatedField}`,
+        field: duplicatedField
+      });
+    }
+
     res.status(500).json({ message: 'Server error' });
   }
 };
