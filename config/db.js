@@ -194,10 +194,17 @@ const connectTenantDB = async (tenantId, companyName) => {
 
     console.log(`✅ Tenant database connected: ${dbName} - Total connections: ${totalConnections}`);
 
-    // Initialize tenant database with collections (non-blocking)
-    initializeTenantDatabase(tenantConnection).catch(err => {
-      console.error('⚠️ Tenant database initialization failed (non-critical):', err.message);
-    });
+    // ✅ FIX: Initialize tenant database BLOCKING — models must be registered
+    // before any request (e.g. createEmployee) uses the connection.
+    // Previously this was non-blocking (.catch only), which caused the Counter
+    // model to be missing when the pre-save hook ran, leading to E11000 duplicate
+    // key errors on employeeId.
+    try {
+      await initializeTenantDatabase(tenantConnection);
+    } catch (err) {
+      console.error('⚠️ Tenant database initialization failed:', err.message);
+      // Non-fatal: connection still usable, but log clearly
+    }
 
     return tenantConnection;
   } catch (error) {
@@ -261,14 +268,14 @@ const createDatabaseName = (companyName) => {
   return dbName;
 };
 
-// Initialize tenant database with all required collections (non-blocking)
-// Initialize tenant database with all required collections (non-blocking)
+// Initialize tenant database with all required collections
 const initializeTenantDatabase = async (tenantConnection) => {
   try {
     if (!tenantConnection || !tenantConnection.db) {
       console.error('❌ initializeTenantDatabase called with invalid tenantConnection');
       return;
     }
+
     // Import schemas
     const UserSchema = require('../models/User');
     const EmployeeSchema = require('../models/Employee');
@@ -282,7 +289,8 @@ const initializeTenantDatabase = async (tenantConnection) => {
     const NotificationSchema = require('../models/Notification');
     const ShiftSchema = require('../models/Shift');
     const DepartmentSettingSchema = require('../models/DepartmentSetting');
-    
+    const CounterSchema = require('../models/Counter');
+
     // Register models with the tenant connection
     const registerModel = (name, schema) => {
       try {
@@ -304,10 +312,10 @@ const initializeTenantDatabase = async (tenantConnection) => {
     registerModel('Project', ProjectSchema);
     registerModel('Task', TaskSchema);
     registerModel('Notification', NotificationSchema);
-    registerModel('Shift', ShiftSchema);  // ✅ Only once
+    registerModel('Shift', ShiftSchema);
     registerModel('DepartmentSetting', DepartmentSettingSchema);
-    registerModel('Counter', CounterSchema);
-    
+    registerModel('Counter', CounterSchema); // ✅ Required for atomic employeeId generation
+
     console.log('✅ Tenant database models initialized');
   } catch (error) {
     console.error('❌ Tenant database initialization error:', error.message);
@@ -349,7 +357,16 @@ const getTenantModels = async (tenantConnection) => {
     throw new Error('Tenant database connection lost');
   }
 
-  // ✅ FIXED: No duplicate Shift, all models using 'conn'
+  // Ensure Counter is registered in case getTenantModels is called on a
+  // connection that was reused (skipped initializeTenantDatabase path)
+  if (!conn.models['Counter']) {
+    try {
+      conn.model('Counter', require('../models/Counter'));
+    } catch (err) {
+      console.warn('⚠️ Could not register Counter model in getTenantModels:', err.message);
+    }
+  }
+
   return {
     User: conn.model('User'),
     Employee: conn.model('Employee'),
@@ -361,9 +378,9 @@ const getTenantModels = async (tenantConnection) => {
     Project: conn.model('Project'),
     Task: conn.model('Task'),
     Notification: conn.model('Notification'),
-    Shift: conn.model('Shift'),  // ✅ Only once, using 'conn'
+    Shift: conn.model('Shift'),
     DepartmentSetting: conn.model('DepartmentSetting'),
-    Counter: conn.model('Counter'), 
+    Counter: conn.model('Counter'), // ✅ Exposed for direct use if needed
   };
 };
 
