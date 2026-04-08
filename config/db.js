@@ -6,6 +6,7 @@ const tenantConnections = new Map();
 let mainDBConnection = null;
 const ShiftSchema = require('../models/Shift');
 const DepartmentSettingSchema = require('../models/DepartmentSetting');
+const CounterSchema = require('../models/Counter');
 
 
 // Global connection pool & cache settings (tune via env)
@@ -305,6 +306,7 @@ const initializeTenantDatabase = async (tenantConnection) => {
     registerModel('Notification', NotificationSchema);
     registerModel('Shift', ShiftSchema);  // ✅ Only once
     registerModel('DepartmentSetting', DepartmentSettingSchema);
+    registerModel('Counter', CounterSchema);
     
     console.log('✅ Tenant database models initialized');
   } catch (error) {
@@ -361,6 +363,7 @@ const getTenantModels = async (tenantConnection) => {
     Notification: conn.model('Notification'),
     Shift: conn.model('Shift'),  // ✅ Only once, using 'conn'
     DepartmentSetting: conn.model('DepartmentSetting'),
+    Counter: conn.model('Counter'), 
   };
 };
 
