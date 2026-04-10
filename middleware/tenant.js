@@ -1,4 +1,8 @@
-const { connectTenantDB, getTenantModels, getSuperAdminModels } = require('../config/db');
+const {
+  connectTenantDB,
+  getTenantModels,
+  getSuperAdminModels
+} = require('../config/db');
 
 // Detect tenant from subdomain / headers / query
 exports.detectTenant = async (req, res, next) => {
@@ -8,20 +12,18 @@ exports.detectTenant = async (req, res, next) => {
       return next();
     }
 
-    // ✅ Extract tenant from headers
     let tenantId = req.headers['x-tenant-id'] || req.headers['x-tenant'];
 
-    // 🔧 FIXED: removed duplicate condition
     let subdomain =
       req.headers['x-tenant-subdomain'] ||
       req.headers['x-tenant'];
 
-    // ✅ Support query param
+    // ✅ Query support
     if (!tenantId && req.query?.tenant) {
       tenantId = req.query.tenant;
     }
 
-    // ✅ Extract from hostname if not provided
+    // ✅ Extract from hostname
     if (!tenantId && !subdomain) {
       let hostname = (
         req.hostname ||
@@ -49,45 +51,10 @@ exports.detectTenant = async (req, res, next) => {
         parts.length > baseParts.length
       ) {
         subdomain = parts[0];
-      } else {
-        const originHeader =
-          req.headers.origin ||
-          req.get('origin') ||
-          req.headers['x-forwarded-host'];
-
-        if (originHeader) {
-          try {
-            let originHost = originHeader;
-
-            if (/^https?:\/\//i.test(originHeader)) {
-              originHost = new URL(originHeader).hostname;
-            } else if (originHeader.includes('/')) {
-              originHost = originHeader.split('/')[0];
-            }
-
-            originHost = originHost.toLowerCase().split(':')[0];
-            const originParts = originHost.split('.');
-
-            if (originHost === BASE_DOMAIN) return next();
-
-            if (
-              originHost.endsWith('.' + BASE_DOMAIN) &&
-              originParts.length > baseParts.length
-            ) {
-              subdomain = originParts[0];
-            } else {
-              return next();
-            }
-          } catch (e) {
-            return next();
-          }
-        } else {
-          return next();
-        }
       }
     }
 
-    // ✅ If tenant info exists → resolve tenant
+    // ✅ Resolve tenant
     if (subdomain || tenantId) {
       const { Tenant } = getSuperAdminModels();
 
@@ -114,9 +81,6 @@ exports.detectTenant = async (req, res, next) => {
         );
 
         req.tenant = undefined;
-        req.tenantId = undefined;
-        req.tenantSubdomain = undefined;
-
         return next();
       }
 
@@ -133,33 +97,47 @@ exports.detectTenant = async (req, res, next) => {
 
       req.tenantDB = tenantConnection;
 
-      // ✅ Load models (CRITICAL FIX AREA)
+      // ✅ Load models
+      let models;
       try {
-        req.models = await getTenantModels(tenantConnection);
+        models = await getTenantModels(tenantConnection);
       } catch (e) {
-        console.error('❌ Failed to load tenant models:', e.message);
+        console.error('❌ getTenantModels failed:', e);
         return res.status(500).json({
           message: 'Failed to initialize tenant models'
         });
       }
 
-      // 🔥 HARD VALIDATION (prevents your original bug)
+      // 🔥 CRITICAL FIX: Ensure User is MODEL (not schema)
       if (
-        !req.models ||
-        !req.models.User ||
-        typeof req.models.User.findOne !== 'function'
+        !models ||
+        !models.User ||
+        typeof models.User.findOne !== 'function'
       ) {
-        console.error(
-          `❌ Invalid User model for tenant: ${tenant.subdomain}`
-        );
+        console.error(`❌ Invalid User model detected. Attempting recovery...`);
 
-        return res.status(500).json({
-          message: 'Tenant model initialization failed'
-        });
+        try {
+          const userSchema = require('../models/userModel');
+
+          models.User =
+            tenantConnection.models.User ||
+            tenantConnection.model('User', userSchema);
+
+          console.log('✅ Recovered User model dynamically');
+        } catch (err) {
+          console.error('❌ Recovery failed:', err.message);
+
+          return res.status(500).json({
+            message: 'Tenant model initialization failed (User model)'
+          });
+        }
       }
 
-      console.log(`🔗 Connected to tenant DB: ${tenant.companyName}`);
-      console.log(`📦 Models loaded:`, Object.keys(req.models));
+      // ✅ Final assignment
+      req.models = models;
+
+      console.log(`🔗 Connected: ${tenant.companyName}`);
+      console.log(`📦 Models:`, Object.keys(models));
     }
 
     next();
