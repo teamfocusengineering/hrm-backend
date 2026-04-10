@@ -16,6 +16,9 @@ const resolveUserModel = (req) => {
     return req.models.User;
   }
 
+  throw new Error(`❌ User model not initialized for tenant: ${req.headers['x-tenant-id']}`);
+};
+
   // Optional strict mode (uncomment if you want hard failure instead of fallback)
   // throw new Error(`User model not initialized for tenant: ${req.headers['x-tenant-id']}`);
 
@@ -39,8 +42,12 @@ exports.login = async (req, res) => {
     console.log("UserModel type:", typeof UserModel);
     console.log("Has findOne:", typeof UserModel.findOne);
 
-    console.log("UserModel type-L:", typeof req.models.User.findOne);
-    console.log("Model name:", req.models.User.modelName);
+   if (req.models && req.models.User) {
+      console.log("UserModel type-L:", typeof req.models.User.findOne);
+      console.log("Model name:", req.models.User.modelName);
+  } else {
+     console.log("⚠️ req.models not available");
+}
 
     const user = await UserModel.findOne({ email, isActive: true })
       .populate({
