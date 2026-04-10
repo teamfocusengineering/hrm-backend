@@ -5,9 +5,7 @@ const generateToken = require('../utils/generateToken');
 const { validationResult } = require('express-validator');
 const mongoose = require('mongoose');
 
-/**
- * 🔥 Robust Tenant-Aware Model Resolver
- */
+// Robust Tenant-Aware Model Resolver
 const resolveUserModel = (req) => {
   if (
     req &&
@@ -40,6 +38,11 @@ exports.login = async (req, res) => {
     console.log("Tenant:", req.headers['x-tenant-id']);
     console.log("UserModel type:", typeof UserModel);
     console.log("Has findOne:", typeof UserModel.findOne);
+
+    console.log("UserModel:", UserModel);
+    console.log("Constructor:", UserModel?.constructor?.name);
+    console.log("Keys:", Object.keys(UserModel || {}));
+    console.log("findOne type:", typeof UserModel?.findOne);
 
     const user = await UserModel.findOne({ email, isActive: true })
       .populate({
