@@ -1,11 +1,9 @@
-const DefaultUser = require('../models/User');
-const Employee = require('../models/Employee');
+const mongoose = require('mongoose');
 const Attendance = require('../models/Attendance');
 const generateToken = require('../utils/generateToken');
 const { validationResult } = require('express-validator');
-const mongoose = require('mongoose');
 
-// Robust Tenant-Aware Model Resolver
+// 🔒 Strict Tenant-Aware Model Resolver (NO FALLBACK)
 const resolveUserModel = (req) => {
   if (
     req &&
@@ -16,19 +14,16 @@ const resolveUserModel = (req) => {
     return req.models.User;
   }
 
-  throw new Error(`❌ User model not initialized for tenant: ${req.headers['x-tenant-id']}`);
-};
-
-  // Optional strict mode (uncomment if you want hard failure instead of fallback)
-  // throw new Error(`User model not initialized for tenant: ${req.headers['x-tenant-id']}`);
-
-  return DefaultUser;
+  throw new Error(
+    `User model not initialized for tenant: ${req.headers['x-tenant-id']}`
+  );
 };
 
 // @desc    User login
 // @route   POST /api/auth/login
 exports.login = async (req, res) => {
   try {
+    // 🔍 Validate request
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       return res.status(400).json({ errors: errors.array() });
@@ -36,19 +31,14 @@ exports.login = async (req, res) => {
 
     const { email, password } = req.body;
 
+    // 🔒 Resolve tenant-specific model
     const UserModel = resolveUserModel(req);
 
-    console.log("Tenant:", req.headers['x-tenant-id']);
-    console.log("UserModel type:", typeof UserModel);
-    console.log("Has findOne:", typeof UserModel.findOne);
+    // ✅ Safe debug logs
+    console.log("👉 Tenant:", req.headers['x-tenant-id']);
+    console.log("👉 Model loaded:", UserModel.modelName);
 
-   if (req.models && req.models.User) {
-      console.log("UserModel type-L:", typeof req.models.User.findOne);
-      console.log("Model name:", req.models.User.modelName);
-  } else {
-     console.log("⚠️ req.models not available");
-}
-
+    // 🔍 Find user
     const user = await UserModel.findOne({ email, isActive: true })
       .populate({
         path: 'employee',
@@ -56,20 +46,26 @@ exports.login = async (req, res) => {
       });
 
     if (!user || !user.employee || !user.employee.isActive) {
-      return res.status(401).json({ message: 'Invalid credentials or account inactive' });
+      return res.status(401).json({
+        message: 'Invalid credentials or account inactive'
+      });
     }
 
+    // 🔐 Password check
     const isPasswordMatch = await user.matchPassword(password);
     if (!isPasswordMatch) {
       return res.status(401).json({ message: 'Invalid credentials' });
     }
 
+    // 🎟️ Generate token
     const token = generateToken(user._id, user.role);
 
+    // 🕒 Update login session
     user.lastLogin = new Date();
     user.createLoginSession(token);
     await user.save();
 
+    // ✅ Response
     res.json({
       _id: user._id,
       employee: user.employee,
@@ -79,8 +75,17 @@ exports.login = async (req, res) => {
       token: token,
       loginTime: user.lastLogin
     });
+
   } catch (error) {
-    console.error('Login error:', error);
+    console.error('Login error:', error.message);
+
+    // 🔥 Clear error for missing tenant/models
+    if (error.message.includes('User model not initialized')) {
+      return res.status(400).json({
+        message: 'Invalid or uninitialized tenant'
+      });
+    }
+
     res.status(500).json({ message: 'Server error' });
   }
 };
@@ -89,6 +94,7 @@ exports.login = async (req, res) => {
 exports.logout = async (req, res) => {
   try {
     const UserModel = resolveUserModel(req);
+
     const user = await UserModel.findById(req.user._id);
 
     if (!user) {
@@ -98,7 +104,7 @@ exports.logout = async (req, res) => {
     user.invalidateSession();
     await user.save();
 
-    // Auto check-out
+    // 🔁 Auto check-out
     try {
       const today = new Date();
       today.setHours(0, 0, 0, 0);
@@ -124,34 +130,9 @@ exports.logout = async (req, res) => {
       message: 'Logout successful',
       logoutTime: user.lastLogout
     });
+
   } catch (error) {
-    console.error('Logout error:', error);
-    res.status(500).json({ message: 'Server error' });
-  }
-};
-
-// @desc    Force logout user
-exports.forceLogout = async (req, res) => {
-  try {
-    const UserModel = resolveUserModel(req);
-
-    const userToLogout = await UserModel.findById(req.params.userId)
-      .populate('employee', 'name email');
-
-    if (!userToLogout) {
-      return res.status(404).json({ message: 'User not found' });
-    }
-
-    userToLogout.invalidateSession();
-    await userToLogout.save();
-
-    res.json({
-      message: `User ${userToLogout.employee.name} has been logged out successfully`,
-      logoutTime: userToLogout.lastLogout,
-      forcedBy: req.user.employee.name
-    });
-  } catch (error) {
-    console.error('Force logout error:', error);
+    console.error('Logout error:', error.message);
     res.status(500).json({ message: 'Server error' });
   }
 };
@@ -178,10 +159,13 @@ exports.getMe = async (req, res) => {
       mobileAllowed: user.mobileAllowed || false,
       lastLogin: user.lastLogin,
       lastLogout: user.lastLogout,
-      isSessionValid: user.isSessionValid(req.headers.authorization?.split(' ')[1])
+      isSessionValid: user.isSessionValid(
+        req.headers.authorization?.split(' ')[1]
+      )
     });
+
   } catch (error) {
-    console.error('Get me error:', error);
+    console.error('Get me error:', error.message);
     res.status(500).json({ message: 'Server error' });
   }
 };
@@ -200,7 +184,9 @@ exports.changePassword = async (req, res) => {
 
     const isMatch = await user.matchPassword(currentPassword);
     if (!isMatch) {
-      return res.status(400).json({ message: 'Current password is incorrect' });
+      return res.status(400).json({
+        message: 'Current password is incorrect'
+      });
     }
 
     user.password = newPassword;
@@ -211,30 +197,9 @@ exports.changePassword = async (req, res) => {
       message: 'Password updated successfully. Please login again.',
       logoutTime: user.lastLogout
     });
+
   } catch (error) {
-    console.error('Change password error:', error);
-    res.status(500).json({ message: 'Server error' });
-  }
-};
-
-// @desc    Get active sessions
-exports.getActiveSessions = async (req, res) => {
-  try {
-    const UserModel = resolveUserModel(req);
-
-    const activeUsers = await UserModel.find({
-      'loginSession.isValid': true,
-      'loginSession.expires': { $gt: new Date() }
-    })
-      .populate('employee', 'name email department position')
-      .select('email role lastLogin loginSession');
-
-    res.json({
-      totalActiveSessions: activeUsers.length,
-      activeSessions: activeUsers
-    });
-  } catch (error) {
-    console.error('Get active sessions error:', error);
+    console.error('Change password error:', error.message);
     res.status(500).json({ message: 'Server error' });
   }
 };
@@ -248,14 +213,19 @@ exports.changeEmployeePassword = async (req, res) => {
     const UserModel = resolveUserModel(req);
 
     let user;
+
     if (mongoose.Types.ObjectId.isValid(userId)) {
-      user = await UserModel.findById(userId).populate('employee', 'name email');
+      user = await UserModel.findById(userId)
+        .populate('employee', 'name email');
 
       if (!user) {
-        user = await UserModel.findOne({ employee: userId }).populate('employee', 'name email');
+        user = await UserModel.findOne({ employee: userId })
+          .populate('employee', 'name email');
       }
     } else {
-      return res.status(400).json({ message: 'Invalid user ID format' });
+      return res.status(400).json({
+        message: 'Invalid user ID format'
+      });
     }
 
     if (!user) {
@@ -270,8 +240,9 @@ exports.changeEmployeePassword = async (req, res) => {
     res.json({
       message: `Password updated successfully for ${user.employee.name}`
     });
+
   } catch (error) {
-    console.error('Change employee password error:', error);
+    console.error('Change employee password error:', error.message);
     res.status(500).json({ message: 'Server error' });
   }
 };
@@ -284,14 +255,19 @@ exports.resetEmployeePassword = async (req, res) => {
     const UserModel = resolveUserModel(req);
 
     let user;
+
     if (mongoose.Types.ObjectId.isValid(userId)) {
-      user = await UserModel.findById(userId).populate('employee', 'name email');
+      user = await UserModel.findById(userId)
+        .populate('employee', 'name email');
 
       if (!user) {
-        user = await UserModel.findOne({ employee: userId }).populate('employee', 'name email');
+        user = await UserModel.findOne({ employee: userId })
+          .populate('employee', 'name email');
       }
     } else {
-      return res.status(400).json({ message: 'Invalid user ID format' });
+      return res.status(400).json({
+        message: 'Invalid user ID format'
+      });
     }
 
     if (!user) {
@@ -309,8 +285,9 @@ exports.resetEmployeePassword = async (req, res) => {
       message: `Password reset successfully for ${user.employee.name}`,
       newPassword
     });
+
   } catch (error) {
-    console.error('Reset employee password error:', error);
+    console.error('Reset employee password error:', error.message);
     res.status(500).json({ message: 'Server error' });
   }
 };
