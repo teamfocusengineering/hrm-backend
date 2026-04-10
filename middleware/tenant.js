@@ -1,34 +1,42 @@
-const { connectTenantDB, getTenantModels } = require('../config/db');
-const { getSuperAdminModels } = require('../config/db');
+const { connectTenantDB, getTenantModels, getSuperAdminModels } = require('../config/db');
 
-// Detect tenant from subdomain and connect to appropriate database
+// Detect tenant from subdomain / headers / query
 exports.detectTenant = async (req, res, next) => {
   try {
-    // ✅ 1️⃣ Skip tenant detection for super-admin routes
+    // ✅ Skip tenant detection for super-admin routes
     if (req.originalUrl.startsWith('/api/super-admin')) {
       return next();
     }
 
-    // Support multiple header names for tenant coming from different frontends
+    // ✅ Extract tenant from headers
     let tenantId = req.headers['x-tenant-id'] || req.headers['x-tenant'];
-    let subdomain = req.headers['x-tenant-subdomain'] || req.headers['x-tenant-subdomain'] || req.headers['x-tenant'];
 
-    // Also support query param `tenant`
-    if (!tenantId && req.query && req.query.tenant) {
+    // 🔧 FIXED: removed duplicate condition
+    let subdomain =
+      req.headers['x-tenant-subdomain'] ||
+      req.headers['x-tenant'];
+
+    // ✅ Support query param
+    if (!tenantId && req.query?.tenant) {
       tenantId = req.query.tenant;
     }
 
-    // If no headers, try to extract from hostname
+    // ✅ Extract from hostname if not provided
     if (!tenantId && !subdomain) {
-      let hostname = (req.hostname || (req.get('host') || '').split(':')[0] || '').toLowerCase();
+      let hostname = (
+        req.hostname ||
+        (req.get('host') || '').split(':')[0] ||
+        ''
+      ).toLowerCase();
+
       if (!hostname) return next();
 
       let BASE_DOMAIN = process.env.BASE_DOMAIN || 'hrm-saas.vercel.app';
-      BASE_DOMAIN = String(BASE_DOMAIN).toLowerCase().trim();
-      BASE_DOMAIN = BASE_DOMAIN.replace(/^https?:\/\//, '');
-      BASE_DOMAIN = BASE_DOMAIN.split('/')[0];
-      BASE_DOMAIN = BASE_DOMAIN.split(':')[0];
-      BASE_DOMAIN = BASE_DOMAIN.replace(/^www\./, '');
+      BASE_DOMAIN = BASE_DOMAIN.toLowerCase()
+        .replace(/^https?:\/\//, '')
+        .split('/')[0]
+        .split(':')[0]
+        .replace(/^www\./, '');
 
       const parts = hostname.split('.');
       const baseParts = BASE_DOMAIN.split('.');
@@ -36,24 +44,36 @@ exports.detectTenant = async (req, res, next) => {
       if (hostname === 'localhost' || parts.length === 1) return next();
       if (hostname === BASE_DOMAIN) return next();
 
-      if (hostname.endsWith('.' + BASE_DOMAIN) && parts.length > baseParts.length) {
+      if (
+        hostname.endsWith('.' + BASE_DOMAIN) &&
+        parts.length > baseParts.length
+      ) {
         subdomain = parts[0];
       } else {
-        const originHeader = req.headers.origin || req.get('origin') || req.headers['x-forwarded-host'];
+        const originHeader =
+          req.headers.origin ||
+          req.get('origin') ||
+          req.headers['x-forwarded-host'];
+
         if (originHeader) {
           try {
             let originHost = originHeader;
+
             if (/^https?:\/\//i.test(originHeader)) {
               originHost = new URL(originHeader).hostname;
             } else if (originHeader.includes('/')) {
               originHost = originHeader.split('/')[0];
             }
-            originHost = String(originHost).toLowerCase().split(':')[0];
+
+            originHost = originHost.toLowerCase().split(':')[0];
             const originParts = originHost.split('.');
 
             if (originHost === BASE_DOMAIN) return next();
 
-            if (originHost.endsWith('.' + BASE_DOMAIN) && originParts.length > baseParts.length) {
+            if (
+              originHost.endsWith('.' + BASE_DOMAIN) &&
+              originParts.length > baseParts.length
+            ) {
               subdomain = originParts[0];
             } else {
               return next();
@@ -67,61 +87,89 @@ exports.detectTenant = async (req, res, next) => {
       }
     }
 
-    if (subdomain) {
+    // ✅ If tenant info exists → resolve tenant
+    if (subdomain || tenantId) {
       const { Tenant } = getSuperAdminModels();
 
-      // Try to find tenant by subdomain or by a provided tenant identifier
       let tenant;
+
       try {
         tenant = await Tenant.findOne({
           $or: [
             { subdomain: String(subdomain).toLowerCase() },
-            { _id: subdomain }
+            { _id: tenantId }
           ],
           isActive: true
         });
       } catch (e) {
-        // If subdomain value wasn't an ObjectId, fallback to searching by subdomain only
-        tenant = await Tenant.findOne({ subdomain: String(subdomain).toLowerCase(), isActive: true });
+        tenant = await Tenant.findOne({
+          subdomain: String(subdomain).toLowerCase(),
+          isActive: true
+        });
       }
 
-      if (tenant) {
-        req.tenant = tenant;
-        req.tenantId = tenant._id;
-        req.tenantSubdomain = tenant.subdomain;
+      if (!tenant) {
+        console.warn(
+          `⚠️ Tenant not found or inactive: ${subdomain || tenantId}`
+        );
 
-        const tenantConnection = await connectTenantDB(tenant._id.toString(), tenant.companyName);
-        req.tenantDB = tenantConnection;
-        // getTenantModels is async (verifies connection); await it so req.models holds models, not a Promise
-        try {
-          req.models = await getTenantModels(tenantConnection);
-        } catch (e) {
-          console.error('Failed to load tenant models:', e && e.message ? e.message : e);
-          return res.status(500).json({ message: 'Failed to initialize tenant models' });
-        }
-
-        console.log(`🔗 Connected to tenant database: ${tenant.companyName}`);
-      } else {
-        // If a subdomain/header was provided but no tenant was found, don't hard-fail here.
-        // Clients (install hooks, public pages) may send stale or exploratory headers —
-        // allow the request to continue without tenant context and let downstream
-        // authentication/authorization decide how to handle it.
-        console.warn(`Tenant detection: subdomain provided but not found or inactive -> '${subdomain}'. Continuing without tenant context.`);
-        // ensure no tenant properties are set on the request
         req.tenant = undefined;
         req.tenantId = undefined;
         req.tenantSubdomain = undefined;
+
+        return next();
       }
+
+      // ✅ Attach tenant info
+      req.tenant = tenant;
+      req.tenantId = tenant._id;
+      req.tenantSubdomain = tenant.subdomain;
+
+      // ✅ Connect DB
+      const tenantConnection = await connectTenantDB(
+        tenant._id.toString(),
+        tenant.companyName
+      );
+
+      req.tenantDB = tenantConnection;
+
+      // ✅ Load models (CRITICAL FIX AREA)
+      try {
+        req.models = await getTenantModels(tenantConnection);
+      } catch (e) {
+        console.error('❌ Failed to load tenant models:', e.message);
+        return res.status(500).json({
+          message: 'Failed to initialize tenant models'
+        });
+      }
+
+      // 🔥 HARD VALIDATION (prevents your original bug)
+      if (
+        !req.models ||
+        !req.models.User ||
+        typeof req.models.User.findOne !== 'function'
+      ) {
+        console.error(
+          `❌ Invalid User model for tenant: ${tenant.subdomain}`
+        );
+
+        return res.status(500).json({
+          message: 'Tenant model initialization failed'
+        });
+      }
+
+      console.log(`🔗 Connected to tenant DB: ${tenant.companyName}`);
+      console.log(`📦 Models loaded:`, Object.keys(req.models));
     }
 
     next();
   } catch (error) {
-    console.error('Tenant detection error:', error);
+    console.error('❌ Tenant detection error:', error);
     res.status(500).json({ message: 'Tenant detection failed' });
   }
 };
 
-// Require tenant context
+// ✅ Require tenant middleware
 exports.requireTenant = (req, res, next) => {
   if (!req.tenant) {
     return res.status(400).json({
