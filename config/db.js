@@ -335,55 +335,52 @@ const getTenantModels = async (tenantConnection) => {
     throw new Error('Tenant connection is required');
   }
 
+  // Accept either a wrapper ({conn,...}) or a raw connection
   const conn = tenantConnection.conn ? tenantConnection.conn : tenantConnection;
 
   if (!conn.db || !conn.db.admin) {
-    throw new Error('Invalid tenant connection');
+    throw new Error('Invalid tenant connection object (no db)');
   }
 
-  await conn.db.admin().ping();
-
-  // 🔥 Universal model loader
-  const loadModel = (name, path) => {
-    const schemaImport = require(path);
-
-    // Handle both schema or model export
-    const schema =
-      schemaImport && schemaImport.schema
-        ? schemaImport.schema
-        : schemaImport;
-
-    // If model exists → validate it
-    if (conn.models[name]) {
-      const model = conn.models[name];
-
-      if (typeof model.findOne === 'function') {
-        return model; // ✅ valid model
+  // Verify connection is still alive
+  try {
+    await conn.db.admin().ping();
+    // update lastUsed if we have a wrapper entry
+    for (const [tid, wrapper] of tenantConnections.entries()) {
+      if (wrapper && wrapper.conn === conn) {
+        tenantConnections.set(tid, { conn, lastUsed: Date.now() });
+        break;
       }
-
-      // ❌ corrupted → delete and recreate
-      console.warn(`⚠️ Fixing corrupted model: ${name}`);
-      delete conn.models[name];
     }
+  } catch (error) {
+    console.error('❌ Tenant connection is dead or unresponsive:', error.message);
+    throw new Error('Tenant database connection lost');
+  }
 
-    // ✅ Create fresh model
-    return conn.model(name, schema);
-  };
+  // Ensure Counter is registered in case getTenantModels is called on a
+  // connection that was reused (skipped initializeTenantDatabase path)
+  if (!conn.models['Counter']) {
+    try {
+      conn.model('Counter', require('../models/Counter'));
+    } catch (err) {
+      console.warn('⚠️ Could not register Counter model in getTenantModels:', err.message);
+    }
+  }
 
   return {
-    User: loadModel('User', '../models/User'),
-    Employee: loadModel('Employee', '../models/Employee'),
-    Attendance: loadModel('Attendance', '../models/Attendance'),
-    Leave: loadModel('Leave', '../models/Leave'),
-    Payroll: loadModel('Payroll', '../models/Payroll'),
-    Company: loadModel('Company', '../models/Company'),
-    Permission: loadModel('Permission', '../models/Permission'),
-    Project: loadModel('Project', '../models/Project'),
-    Task: loadModel('Task', '../models/Task'),
-    Notification: loadModel('Notification', '../models/Notification'),
-    Shift: loadModel('Shift', '../models/Shift'),
-    DepartmentSetting: loadModel('DepartmentSetting', '../models/DepartmentSetting'),
-    Counter: loadModel('Counter', '../models/Counter'),
+    User: conn.model('User'),
+    Employee: conn.model('Employee'),
+    Attendance: conn.model('Attendance'),
+    Leave: conn.model('Leave'),
+    Payroll: conn.model('Payroll'),
+    Company: conn.model('Company'),
+    Permission: conn.model('Permission'),
+    Project: conn.model('Project'),
+    Task: conn.model('Task'),
+    Notification: conn.model('Notification'),
+    Shift: conn.model('Shift'),
+    DepartmentSetting: conn.model('DepartmentSetting'),
+    Counter: conn.model('Counter'), // ✅ Exposed for direct use if needed
   };
 };
 
