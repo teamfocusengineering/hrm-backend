@@ -1,29 +1,15 @@
-const mongoose = require('mongoose');
+const DefaultUser = require('../models/User');
+// Helper to resolve tenant-aware User model
+const getUserModel = (req) => (req && req.models && req.models.User) ? req.models.User : DefaultUser;
+const Employee = require('../models/Employee');
 const Attendance = require('../models/Attendance');
 const generateToken = require('../utils/generateToken');
 const { validationResult } = require('express-validator');
+const mongoose = require('mongoose');
 
-// 🔒 Strict Tenant-Aware Model Resolver (NO FALLBACK)
-const resolveUserModel = (req) => {
-  if (
-    req &&
-    req.models &&
-    req.models.User &&
-    typeof req.models.User.findOne === 'function'
-  ) {
-    return req.models.User;
-  }
-
-  throw new Error(
-    `User model not initialized for tenant: ${req.headers['x-tenant-id']}`
-  );
-};
-
-// @desc    User login
-// @route   POST /api/auth/login
+// User login with tenant context
 exports.login = async (req, res) => {
   try {
-    // 🔍 Validate request
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       return res.status(400).json({ errors: errors.array() });
@@ -31,14 +17,10 @@ exports.login = async (req, res) => {
 
     const { email, password } = req.body;
 
-    // 🔒 Resolve tenant-specific model
-    const UserModel = resolveUserModel(req);
+    // Use tenant-specific models if available, otherwise fall back to default User model
+    const UserModel = (req.models && req.models.User) ? req.models.User : DefaultUser;
 
-    // ✅ Safe debug logs
-    console.log("👉 Tenant:", req.headers['x-tenant-id']);
-    console.log("👉 Model loaded:", UserModel.modelName);
-
-    // 🔍 Find user
+    // Check if user exists and is active
     const user = await UserModel.findOne({ email, isActive: true })
       .populate({
         path: 'employee',
@@ -46,26 +28,23 @@ exports.login = async (req, res) => {
       });
 
     if (!user || !user.employee || !user.employee.isActive) {
-      return res.status(401).json({
-        message: 'Invalid credentials or account inactive'
-      });
+      return res.status(401).json({ message: 'Invalid credentials or account inactive' });
     }
 
-    // 🔐 Password check
+    // Check password
     const isPasswordMatch = await user.matchPassword(password);
     if (!isPasswordMatch) {
       return res.status(401).json({ message: 'Invalid credentials' });
     }
 
-    // 🎟️ Generate token
+    // Generate token
     const token = generateToken(user._id, user.role);
 
-    // 🕒 Update login session
+    // Update last login and create session
     user.lastLogin = new Date();
     user.createLoginSession(token);
     await user.save();
 
-    // ✅ Response
     res.json({
       _id: user._id,
       employee: user.employee,
@@ -75,45 +54,39 @@ exports.login = async (req, res) => {
       token: token,
       loginTime: user.lastLogin
     });
-
   } catch (error) {
-    console.error('Login error:', error.message);
-
-    // 🔥 Clear error for missing tenant/models
-    if (error.message.includes('User model not initialized')) {
-      return res.status(400).json({
-        message: 'Invalid or uninitialized tenant'
-      });
-    }
-
+    console.error('Login error:', error);
     res.status(500).json({ message: 'Server error' });
   }
 };
 
+
 // @desc    Logout user
+// @route   POST /api/auth/logout
+// @access  Private
 exports.logout = async (req, res) => {
   try {
-    const UserModel = resolveUserModel(req);
-
-    const user = await UserModel.findById(req.user._id);
+  const UserModel = getUserModel(req);
+  const user = await UserModel.findById(req.user._id);
 
     if (!user) {
       return res.status(404).json({ message: 'User not found' });
     }
 
+    // Invalidate session
     user.invalidateSession();
     await user.save();
 
-    // 🔁 Auto check-out
+    // Auto check-out for attendance
     try {
       const today = new Date();
       today.setHours(0, 0, 0, 0);
-
+      
       const attendance = await Attendance.findOne({
         employee: user.employee,
         date: {
           $gte: today,
-          $lte: new Date(today.getTime() + 86400000)
+          $lte: new Date(today.getTime() + 24 * 60 * 60 * 1000)
         },
         checkOut: { $exists: false }
       });
@@ -122,26 +95,55 @@ exports.logout = async (req, res) => {
         attendance.checkOut = new Date();
         await attendance.save();
       }
-    } catch (err) {
-      console.log('Auto check-out failed:', err.message);
+    } catch (attendanceError) {
+      console.log('Auto check-out failed:', attendanceError.message);
+      // Continue with logout even if auto check-out fails
     }
 
-    res.json({
+    res.json({ 
       message: 'Logout successful',
       logoutTime: user.lastLogout
     });
-
   } catch (error) {
-    console.error('Logout error:', error.message);
+    console.error('Logout error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// @desc    Force logout user (Admin only)
+// @route   POST /api/auth/logout/:userId
+// @access  Private/Admin
+exports.forceLogout = async (req, res) => {
+  try {
+    const UserModel = getUserModel(req);
+    const userToLogout = await UserModel.findById(req.params.userId)
+      .populate('employee', 'name email');
+
+    if (!userToLogout) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    // Invalidate session
+    userToLogout.invalidateSession();
+    await userToLogout.save();
+
+    res.json({ 
+      message: `User ${userToLogout.employee.name} has been logged out successfully`,
+      logoutTime: userToLogout.lastLogout,
+      forcedBy: req.user.employee.name
+    });
+  } catch (error) {
+    console.error('Force logout error:', error);
     res.status(500).json({ message: 'Server error' });
   }
 };
 
 // @desc    Get current user
+// @route   GET /api/auth/me
+// @access  Private
 exports.getMe = async (req, res) => {
   try {
-    const UserModel = resolveUserModel(req);
-
+    const UserModel = getUserModel(req);
     const user = await UserModel.findById(req.user._id)
       .populate({
         path: 'employee',
@@ -159,135 +161,201 @@ exports.getMe = async (req, res) => {
       mobileAllowed: user.mobileAllowed || false,
       lastLogin: user.lastLogin,
       lastLogout: user.lastLogout,
-      isSessionValid: user.isSessionValid(
-        req.headers.authorization?.split(' ')[1]
-      )
+      isSessionValid: user.isSessionValid(req.headers.authorization?.split(' ')[1])
     });
-
   } catch (error) {
-    console.error('Get me error:', error.message);
+    console.error('Get me error:', error);
     res.status(500).json({ message: 'Server error' });
   }
 };
 
 // @desc    Change password
+// @route   PUT /api/auth/change-password
+// @access  Private
 exports.changePassword = async (req, res) => {
   try {
     const { currentPassword, newPassword } = req.body;
 
-    const UserModel = resolveUserModel(req);
-    const user = await UserModel.findById(req.user._id);
+  const UserModel = getUserModel(req);
+  const user = await UserModel.findById(req.user._id);
 
     if (!user) {
       return res.status(404).json({ message: 'User not found' });
     }
 
-    const isMatch = await user.matchPassword(currentPassword);
-    if (!isMatch) {
-      return res.status(400).json({
-        message: 'Current password is incorrect'
-      });
+    // Check current password
+    const isCurrentPasswordMatch = await user.matchPassword(currentPassword);
+    if (!isCurrentPasswordMatch) {
+      return res.status(400).json({ message: 'Current password is incorrect' });
     }
 
+    // Update password and invalidate all sessions
     user.password = newPassword;
-    user.invalidateSession();
+    user.invalidateSession(); // Logout from current session after password change
     await user.save();
 
-    res.json({
+    res.json({ 
       message: 'Password updated successfully. Please login again.',
       logoutTime: user.lastLogout
     });
-
   } catch (error) {
-    console.error('Change password error:', error.message);
+    console.error('Change password error:', error);
     res.status(500).json({ message: 'Server error' });
   }
 };
 
-// @desc    Change employee password
+// @desc    Get active sessions (Admin only)
+// @route   GET /api/auth/active-sessions
+// @access  Private/Admin
+exports.getActiveSessions = async (req, res) => {
+  try {
+    const UserModel = getUserModel(req);
+    const activeUsers = await UserModel.find({
+      'loginSession.isValid': true,
+      'loginSession.expires': { $gt: new Date() }
+    })
+    .populate('employee', 'name email department position')
+    .select('email role lastLogin loginSession');
+
+    const activeSessions = activeUsers.map(user => ({
+      _id: user._id,
+      employee: user.employee,
+      role: user.role,
+      lastLogin: user.lastLogin,
+      sessionExpires: user.loginSession.expires,
+      isActive: true
+    }));
+
+    res.json({
+      totalActiveSessions: activeSessions.length,
+      activeSessions: activeSessions
+    });
+  } catch (error) {
+    console.error('Get active sessions error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// @desc    Change employee password (Admin only)
+// @route   PUT /api/auth/change-employee-password/:userId
+// @access  Private/Admin
 exports.changeEmployeePassword = async (req, res) => {
   try {
     const { newPassword } = req.body;
     const { userId } = req.params;
 
-    const UserModel = resolveUserModel(req);
+    console.log('Changing password for ID:', userId);
 
-    let user;
+    // Validate password
+    if (!newPassword || newPassword.length < 6) {
+      return res.status(400).json({ 
+        message: 'Password must be at least 6 characters long' 
+      });
+    }
 
-    if (mongoose.Types.ObjectId.isValid(userId)) {
-      user = await UserModel.findById(userId)
-        .populate('employee', 'name email');
+  const UserModel = getUserModel(req);
+  let user;
 
+    // Check if the ID is a valid ObjectId
+      if (mongoose.Types.ObjectId.isValid(userId)) {
+      // Try to find user by ID first
+      user = await UserModel.findById(userId).populate('employee', 'name email');
+      
+      // If user not found by ID, try to find by employee ID
       if (!user) {
-        user = await UserModel.findOne({ employee: userId })
-          .populate('employee', 'name email');
+        user = await UserModel.findOne({ employee: userId }).populate('employee', 'name email');
       }
     } else {
-      return res.status(400).json({
-        message: 'Invalid user ID format'
-      });
+      return res.status(400).json({ message: 'Invalid user ID format' });
     }
 
     if (!user) {
       return res.status(404).json({ message: 'User not found' });
     }
 
+    if (!user.isActive) {
+      return res.status(400).json({ message: 'Cannot change password for inactive user' });
+    }
+
+    // Update password and invalidate sessions
     user.password = newPassword;
-    user.invalidateSession();
+    user.invalidateSession(); // Force logout from all sessions
     user.passwordChangedAt = Date.now();
     await user.save();
 
-    res.json({
-      message: `Password updated successfully for ${user.employee.name}`
-    });
+    console.log(`Password changed for user: ${user.employee.name}`);
 
+    res.json({ 
+      message: `Password updated successfully for ${user.employee.name}`,
+      employee: {
+        name: user.employee.name,
+        email: user.employee.email
+      },
+      changedBy: req.user.employee.name,
+      changedAt: new Date()
+    });
   } catch (error) {
-    console.error('Change employee password error:', error.message);
+    console.error('Change employee password error:', error);
     res.status(500).json({ message: 'Server error' });
   }
 };
 
-// @desc    Reset employee password
+// @desc    Reset employee password (Admin only - without current password)
+// @route   POST /api/auth/reset-employee-password/:userId
+// @access  Private/Admin
 exports.resetEmployeePassword = async (req, res) => {
   try {
     const { userId } = req.params;
 
-    const UserModel = resolveUserModel(req);
+    console.log('Resetting password for ID:', userId);
 
-    let user;
+  const UserModel = getUserModel(req);
+  let user;
 
+    // Check if the ID is a valid ObjectId
     if (mongoose.Types.ObjectId.isValid(userId)) {
-      user = await UserModel.findById(userId)
-        .populate('employee', 'name email');
-
+      // Try to find user by ID first
+      user = await UserModel.findById(userId).populate('employee', 'name email');
+      
+      // If user not found by ID, try to find by employee ID
       if (!user) {
-        user = await UserModel.findOne({ employee: userId })
-          .populate('employee', 'name email');
+        user = await UserModel.findOne({ employee: userId }).populate('employee', 'name email');
       }
     } else {
-      return res.status(400).json({
-        message: 'Invalid user ID format'
-      });
+      return res.status(400).json({ message: 'Invalid user ID format' });
     }
 
     if (!user) {
       return res.status(404).json({ message: 'User not found' });
     }
 
-    const newPassword = Math.random().toString(36).slice(-8) + 'A1!';
+    if (!user.isActive) {
+      return res.status(400).json({ message: 'Cannot reset password for inactive user' });
+    }
 
-    user.password = newPassword;
-    user.invalidateSession();
+    // Generate a random password
+    const randomPassword = Math.random().toString(36).slice(-8) + 'A1!';
+    
+    console.log(`Generated new password for ${user.employee.name}: ${randomPassword}`);
+
+    // Update password and invalidate sessions
+    user.password = randomPassword;
+    user.invalidateSession(); // Force logout from all sessions
     user.passwordChangedAt = Date.now();
     await user.save();
 
-    res.json({
+    res.json({ 
       message: `Password reset successfully for ${user.employee.name}`,
-      newPassword
+      employee: {
+        name: user.employee.name,
+        email: user.employee.email
+      },
+      newPassword: randomPassword, // Send back for admin to communicate to employee
+      changedBy: req.user.employee.name,
+      changedAt: new Date()
     });
-
   } catch (error) {
-    console.error('Reset employee password error:', error.message);
+    console.error('Reset employee password error:', error);
     res.status(500).json({ message: 'Server error' });
   }
 };
