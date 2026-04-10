@@ -137,7 +137,6 @@ exports.detectTenant = async (req, res, next) => {
       req.models = models;
 
       console.log(`🔗 Connected: ${tenant.companyName}`);
-      console.log(`📦 Models:`, Object.keys(models));
     }
 
     next();
