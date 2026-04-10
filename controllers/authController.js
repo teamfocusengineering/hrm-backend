@@ -39,6 +39,9 @@ exports.login = async (req, res) => {
     console.log("UserModel type:", typeof UserModel);
     console.log("Has findOne:", typeof UserModel.findOne);
 
+    console.log("UserModel type-L:", typeof req.models.User.findOne);
+    console.log("Model name:", req.models.User.modelName);
+
     const user = await UserModel.findOne({ email, isActive: true })
       .populate({
         path: 'employee',
