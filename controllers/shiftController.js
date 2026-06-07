@@ -1,6 +1,8 @@
 const mongoose = require('mongoose');
+const moment = require('moment');
 const DefaultShift = require('../models/Shift');
 const DefaultEmployee = require('../models/Employee');
+const DefaultAttendance = require('../models/Attendance');
 
 const resolveModel = (req, name, defaultSchema) => {
   if (req.models && req.models[name]) return req.models[name];
@@ -12,6 +14,7 @@ const resolveModel = (req, name, defaultSchema) => {
 const getModels = (req) => ({
   Shift: resolveModel(req, 'Shift', DefaultShift),
   Employee: resolveModel(req, 'Employee', DefaultEmployee),
+  Attendance: resolveModel(req, 'Attendance', DefaultAttendance),
 });
 
 // ==================== SHIFT CRUD OPERATIONS ====================
@@ -76,17 +79,17 @@ exports.createShift = async (req, res) => {
     });
   } catch (error) {
     console.error('Create shift error:', error);
-    
+
     // Handle duplicate key error (if any unique index exists)
     if (error.code === 11000) {
-      return res.status(400).json({ 
-        success: false, 
+      return res.status(400).json({
+        success: false,
         message: 'A shift with these details already exists. Please check your shift timings.'
       });
     }
-    
-    res.status(500).json({ 
-      success: false, 
+
+    res.status(500).json({
+      success: false,
       message: 'Server error: ' + error.message
     });
   }
@@ -98,7 +101,7 @@ exports.getShifts = async (req, res) => {
   try {
     const { Shift, Employee } = getModels(req);
     const { isActive, includeStats } = req.query;
-    
+
     let filter = { tenant: req.tenant._id };
     if (isActive !== undefined) {
       filter.isActive = isActive === 'true';
@@ -110,35 +113,35 @@ exports.getShifts = async (req, res) => {
     if (includeStats === 'true') {
       shifts = await Promise.all(shifts.map(async (shift) => {
         const shiftObj = shift.toObject();
-        
+
         // Count employees by department assignment
-        const deptEmployees = shift.assignedDepartments.length > 0 
+        const deptEmployees = shift.assignedDepartments.length > 0
           ? await Employee.countDocuments({
-              department: { $in: shift.assignedDepartments },
-              isActive: true,
-              tenant: req.tenant._id
-            })
+            department: { $in: shift.assignedDepartments },
+            isActive: true,
+            tenant: req.tenant._id
+          })
           : 0;
-        
+
         // Count employees by role assignment
         const roleEmployees = shift.assignedRoles.length > 0
           ? await Employee.countDocuments({
-              position: { $in: shift.assignedRoles },
-              isActive: true,
-              tenant: req.tenant._id
-            })
+            position: { $in: shift.assignedRoles },
+            isActive: true,
+            tenant: req.tenant._id
+          })
           : 0;
-        
+
         // Direct assigned employees count
         const directEmployees = shift.assignedEmployees.length;
-        
+
         shiftObj.stats = {
           byDepartment: deptEmployees,
           byRole: roleEmployees,
           directAssigned: directEmployees,
           totalCovered: deptEmployees + roleEmployees + directEmployees
         };
-        
+
         return shiftObj;
       }));
     }
@@ -150,9 +153,9 @@ exports.getShifts = async (req, res) => {
     });
   } catch (error) {
     console.error('Get shifts error:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Server error' 
+    res.status(500).json({
+      success: false,
+      message: 'Server error'
     });
   }
 };
@@ -163,16 +166,16 @@ exports.getShifts = async (req, res) => {
 exports.getShift = async (req, res) => {
   try {
     const { Shift } = getModels(req);
-    
+
     const shift = await Shift.findOne({
       _id: req.params.id,
       tenant: req.tenant._id
     });
 
     if (!shift) {
-      return res.status(404).json({ 
-        success: false, 
-        message: 'Shift not found' 
+      return res.status(404).json({
+        success: false,
+        message: 'Shift not found'
       });
     }
 
@@ -182,9 +185,9 @@ exports.getShift = async (req, res) => {
     });
   } catch (error) {
     console.error('Get shift error:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Server error' 
+    res.status(500).json({
+      success: false,
+      message: 'Server error'
     });
   }
 };
@@ -199,23 +202,23 @@ exports.updateShift = async (req, res) => {
   try {
     const { Shift, Attendance } = getModels(req);  // ✅ Add Attendance model
     const { startTime, endTime, displayName } = req.body;
-    
+
     const shift = await Shift.findOne({
       _id: req.params.id,
       tenant: req.tenant._id
     });
 
     if (!shift) {
-      return res.status(404).json({ 
-        success: false, 
-        message: 'Shift not found' 
+      return res.status(404).json({
+        success: false,
+        message: 'Shift not found'
       });
     }
 
     // ✅ Check if timing is being changed
-    const isTimingChanged = (startTime && startTime !== shift.startTime) || 
-                            (endTime && endTime !== shift.endTime);
-    
+    const isTimingChanged = (startTime && startTime !== shift.startTime) ||
+      (endTime && endTime !== shift.endTime);
+
     // Update the shift
     const updatedShift = await Shift.findOneAndUpdate(
       {
@@ -229,8 +232,8 @@ exports.updateShift = async (req, res) => {
     // ✅ If timing changed, delete ALL attendance records for this shift
     // This prevents old attendance from showing "Completed" for new timing
     if (isTimingChanged) {
-      const deletedCount = await Attendance.deleteMany({ 
-        shift: shift._id 
+      const deletedCount = await Attendance.deleteMany({
+        shift: shift._id
       });
       console.log(`🗑️ Deleted ${deletedCount.deletedCount} attendance records for shift ${shift.displayName} due to timing change`);
     }
@@ -238,15 +241,15 @@ exports.updateShift = async (req, res) => {
     res.json({
       success: true,
       data: updatedShift,
-      message: isTimingChanged ? 
-        'Shift updated successfully. All attendance records for this shift have been reset due to timing change.' : 
+      message: isTimingChanged ?
+        'Shift updated successfully. All attendance records for this shift have been reset due to timing change.' :
         'Shift updated successfully'
     });
   } catch (error) {
     console.error('Update shift error:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Server error' 
+    res.status(500).json({
+      success: false,
+      message: 'Server error'
     });
   }
 };
@@ -257,15 +260,15 @@ exports.updateShift = async (req, res) => {
 exports.deleteShift = async (req, res) => {
   try {
     const { Shift, Employee } = getModels(req);
-    
+
     // First, unassign this shift from any employees who are directly assigned to it
     await Employee.updateMany(
       {
         assignedShift: req.params.id,
         tenant: req.tenant._id
       },
-      { 
-        $unset: { 
+      {
+        $unset: {
           assignedShift: 1,
           shiftSource: 1,
           shiftAssignedAt: 1,
@@ -281,9 +284,9 @@ exports.deleteShift = async (req, res) => {
     });
 
     if (!shift) {
-      return res.status(404).json({ 
-        success: false, 
-        message: 'Shift not found' 
+      return res.status(404).json({
+        success: false,
+        message: 'Shift not found'
       });
     }
 
@@ -294,9 +297,9 @@ exports.deleteShift = async (req, res) => {
     });
   } catch (error) {
     console.error('Delete shift error:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Server error' 
+    res.status(500).json({
+      success: false,
+      message: 'Server error'
     });
   }
 };
@@ -310,11 +313,11 @@ exports.assignToDepartments = async (req, res) => {
   try {
     const { Shift } = getModels(req);
     const { departments } = req.body;
-    
+
     if (!departments || !departments.length) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Departments array is required' 
+      return res.status(400).json({
+        success: false,
+        message: 'Departments array is required'
       });
     }
 
@@ -324,9 +327,9 @@ exports.assignToDepartments = async (req, res) => {
     });
 
     if (!shift) {
-      return res.status(404).json({ 
-        success: false, 
-        message: 'Shift not found' 
+      return res.status(404).json({
+        success: false,
+        message: 'Shift not found'
       });
     }
 
@@ -343,9 +346,9 @@ exports.assignToDepartments = async (req, res) => {
     });
   } catch (error) {
     console.error('Assign to departments error:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Server error' 
+    res.status(500).json({
+      success: false,
+      message: 'Server error'
     });
   }
 };
@@ -357,11 +360,11 @@ exports.assignToRoles = async (req, res) => {
   try {
     const { Shift } = getModels(req);
     const { roles } = req.body;
-    
+
     if (!roles || !roles.length) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Roles array is required' 
+      return res.status(400).json({
+        success: false,
+        message: 'Roles array is required'
       });
     }
 
@@ -371,9 +374,9 @@ exports.assignToRoles = async (req, res) => {
     });
 
     if (!shift) {
-      return res.status(404).json({ 
-        success: false, 
-        message: 'Shift not found' 
+      return res.status(404).json({
+        success: false,
+        message: 'Shift not found'
       });
     }
 
@@ -390,9 +393,9 @@ exports.assignToRoles = async (req, res) => {
     });
   } catch (error) {
     console.error('Assign to roles error:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Server error' 
+    res.status(500).json({
+      success: false,
+      message: 'Server error'
     });
   }
 };
@@ -404,11 +407,11 @@ exports.assignToEmployees = async (req, res) => {
   try {
     const { Shift, Employee } = getModels(req);
     const { employeeIds } = req.body;
-    
+
     if (!employeeIds || !employeeIds.length) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Employee IDs array is required' 
+      return res.status(400).json({
+        success: false,
+        message: 'Employee IDs array is required'
       });
     }
 
@@ -418,9 +421,9 @@ exports.assignToEmployees = async (req, res) => {
     });
 
     if (!shift) {
-      return res.status(404).json({ 
-        success: false, 
-        message: 'Shift not found' 
+      return res.status(404).json({
+        success: false,
+        message: 'Shift not found'
       });
     }
 
@@ -455,9 +458,9 @@ exports.assignToEmployees = async (req, res) => {
     });
   } catch (error) {
     console.error('Assign to employees error:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Server error' 
+    res.status(500).json({
+      success: false,
+      message: 'Server error'
     });
   }
 };
@@ -476,9 +479,9 @@ exports.removeDepartments = async (req, res) => {
     });
 
     if (!shift) {
-      return res.status(404).json({ 
-        success: false, 
-        message: 'Shift not found' 
+      return res.status(404).json({
+        success: false,
+        message: 'Shift not found'
       });
     }
 
@@ -494,9 +497,9 @@ exports.removeDepartments = async (req, res) => {
     });
   } catch (error) {
     console.error('Remove departments error:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Server error' 
+    res.status(500).json({
+      success: false,
+      message: 'Server error'
     });
   }
 };
@@ -515,9 +518,9 @@ exports.removeRoles = async (req, res) => {
     });
 
     if (!shift) {
-      return res.status(404).json({ 
-        success: false, 
-        message: 'Shift not found' 
+      return res.status(404).json({
+        success: false,
+        message: 'Shift not found'
       });
     }
 
@@ -533,9 +536,9 @@ exports.removeRoles = async (req, res) => {
     });
   } catch (error) {
     console.error('Remove roles error:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Server error' 
+    res.status(500).json({
+      success: false,
+      message: 'Server error'
     });
   }
 };
@@ -554,9 +557,9 @@ exports.removeEmployees = async (req, res) => {
     });
 
     if (!shift) {
-      return res.status(404).json({ 
-        success: false, 
-        message: 'Shift not found' 
+      return res.status(404).json({
+        success: false,
+        message: 'Shift not found'
       });
     }
 
@@ -586,9 +589,9 @@ exports.removeEmployees = async (req, res) => {
     });
   } catch (error) {
     console.error('Remove employees error:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Server error' 
+    res.status(500).json({
+      success: false,
+      message: 'Server error'
     });
   }
 };
@@ -601,17 +604,17 @@ exports.removeEmployees = async (req, res) => {
 exports.getEmployeeShift = async (req, res) => {
   try {
     const { Employee } = getModels(req);
-    
+
     const employee = await Employee.findById(req.params.employeeId);
     if (!employee) {
-      return res.status(404).json({ 
-        success: false, 
-        message: 'Employee not found' 
+      return res.status(404).json({
+        success: false,
+        message: 'Employee not found'
       });
     }
 
     const result = await employee.getEffectiveShift(getModels(req));
-    
+
     res.json({
       success: true,
       data: {
@@ -628,9 +631,9 @@ exports.getEmployeeShift = async (req, res) => {
     });
   } catch (error) {
     console.error('Get employee shift error:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Server error' 
+    res.status(500).json({
+      success: false,
+      message: 'Server error'
     });
   }
 };
@@ -641,22 +644,22 @@ exports.getEmployeeShift = async (req, res) => {
 exports.getMyShift = async (req, res) => {
   try {
     const { Employee } = getModels(req);
-    
+
     const employee = await Employee.findById(req.user.employee._id);
     if (!employee) {
-      return res.status(404).json({ 
-        success: false, 
-        message: 'Employee not found' 
+      return res.status(404).json({
+        success: false,
+        message: 'Employee not found'
       });
     }
 
     const result = await employee.getEffectiveShift(getModels(req));
     const now = new Date();
-    
+
     let shiftStatus = null;
     let canCheckIn = false;
     let canCheckOut = false;
-    
+
     if (result.shift) {
       const checkInStatus = result.shift.getShiftStatus(now, 'checkin');
       const checkOutStatus = result.shift.getShiftStatus(now, 'checkout');
@@ -667,7 +670,7 @@ exports.getMyShift = async (req, res) => {
       canCheckIn = checkInStatus.canCheckIn;
       canCheckOut = checkOutStatus.canCheckOut;
     }
-    
+
     res.json({
       success: true,
       data: {
@@ -682,9 +685,9 @@ exports.getMyShift = async (req, res) => {
     });
   } catch (error) {
     console.error('Get my shift error:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Server error' 
+    res.status(500).json({
+      success: false,
+      message: 'Server error'
     });
   }
 };
@@ -695,70 +698,140 @@ exports.getMyShift = async (req, res) => {
 exports.getMyShiftsToday = async (req, res) => {
   try {
     const { Employee, Shift, Attendance } = getModels(req);
-    
-    const employee = await Employee.findById(req.user.employee._id);
+
+    if (!req.user?.employee?._id) {
+      return res.status(400).json({
+        success: false,
+        message: 'Employee not found in auth context'
+      });
+    }
+
+    if (!req.tenant?._id) {
+      return res.status(400).json({
+        success: false,
+        message: 'Tenant not found. Please login again.'
+      });
+    }
+
+    // Helpful context for debugging 500s
+    const ctx = {
+      employeeId: req.user.employee._id?.toString?.() || String(req.user.employee._id),
+      tenantId: req.tenant._id?.toString?.() || String(req.tenant._id),
+      route: '/api/shifts/today'
+    };
+
+    console.log('getMyShiftsToday: start', ctx);
+
+    let employee;
+    try {
+      employee = await Employee.findById(req.user.employee._id);
+    } catch (err) {
+      console.error('getMyShiftsToday: Employee.findById failed', { ...ctx, error: err?.message, stack: err?.stack });
+      throw err;
+    }
+
     if (!employee) {
-      return res.status(404).json({ 
-        success: false, 
-        message: 'Employee not found' 
+      return res.status(404).json({
+        success: false,
+        message: 'Employee not found'
       });
     }
 
     const today = moment().startOf('day').toDate();
     const todayEnd = moment().endOf('day').toDate();
 
-    // Get today's completed shifts for this employee
-    const completedToday = await Attendance.find({
-      employee: req.user.employee._id,
-      date: {
-        $gte: today,
-        $lte: todayEnd
-      },
-      checkOut: { $exists: true, $ne: null }
-    }).select('shift').lean();
+    let todayAttendances;
+    try {
+      if (!Attendance) {
+        throw new Error('Attendance model not loaded');
+      }
+      todayAttendances = await Attendance.find({
+        employee: req.user.employee._id,
+        date: {
+          $gte: today,
+          $lte: todayEnd
+        }
+      }).select('shift checkIn checkOut workingHours').lean();
+    } catch (err) {
+      console.error('getMyShiftsToday: Attendance.find failed', {
+        ...ctx,
+        error: err?.message,
+        stack: err?.stack
+      });
+      throw err;
+    }
 
-    const completedShiftIds = completedToday.map(a => a.shift).filter(Boolean);
+    const attendanceByShift = new Map(
+      (todayAttendances || [])
+        .filter(a => a?.shift)
+        .map(a => [a.shift.toString(), a])
+    );
 
-    // Get effective shift matching (could match multiple)
-    const shiftResult = await employee.getEffectiveShift(getModels(req));
-    
-    // Find all applicable shifts for today (department/role/direct)
-    const applicableShifts = await Shift.find({
-      tenant: req.tenant._id,
-      isActive: true,
-      $or: [
-        { assignedDepartments: { $in: [employee.department] } },
-        { assignedRoles: { $in: [employee.position] } },
-        { assignedEmployees: employee._id }
-      ]
-    }).lean();
+    let applicableShifts;
+    try {
+      // ✅ Only show shifts created by tenant-admins for THIS tenant.
+      // (Tenant scoping is enforced via tenant:req.tenant._id)
+      applicableShifts = await Shift.find({
+        tenant: req.tenant._id,
+        isActive: true,
+        $or: [
+          { assignedDepartments: { $in: [employee.department] } },
+          { assignedRoles: { $in: [employee.position] } },
+          { assignedEmployees: employee._id }
+        ]
+      }).sort({ startTime: 1 });
+    } catch (err) {
+      console.error('getMyShiftsToday: Shift.find failed', { ...ctx, error: err?.message, stack: err?.stack });
+      throw err;
+    }
 
-    // Filter out completed shifts and add status
-    const todayShifts = applicableShifts
-      .filter(s => !completedShiftIds.includes(s._id))
-      .map(shift => ({
-        ...shift,
-        status: 'pending',
-        canCheckIn: shiftResult.shift?._id.toString() === shift._id.toString()
-      }));
+    const todayShifts = (applicableShifts || []).map((shift) => {
+      const shiftIdStr = shift?._id?.toString?.() || String(shift?._id);
+      const attendance = attendanceByShift.get(shiftIdStr);
+      const checkInStatus = shift.getShiftStatus(new Date(), 'checkin');
+      const status = attendance?.checkOut
+        ? 'completed'
+        : attendance?.checkIn
+          ? 'checked_in'
+          : 'pending';
+
+      return {
+        ...shift.toObject(),
+        status,
+        checkIn: attendance?.checkIn || null,
+        checkOut: attendance?.checkOut || null,
+        workingHours: attendance?.workingHours || 0,
+        canCheckIn: status === 'pending' && checkInStatus.canCheckIn,
+        canCheckOut: status === 'checked_in',
+        checkInWindow: checkInStatus,
+      };
+    });
+
+    console.log('getMyShiftsToday: success', {
+      ...ctx,
+      todayShiftsCount: todayShifts.length,
+      completedTodayCount: todayShifts.filter(s => s.status === 'completed').length
+    });
 
     res.json({
       success: true,
       data: {
         todayShifts,
-        completedToday: completedShiftIds.length,
+        completedToday: todayShifts.filter(s => s.status === 'completed').length,
         totalApplicable: applicableShifts.length,
-        nextShift: todayShifts[0] || null
+        nextShift: todayShifts.find(s => s.status === 'pending' && s.canCheckIn) || null
       }
     });
   } catch (error) {
     console.error('Get my shifts today error:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Server error' 
+    res.status(500).json({
+      success: false,
+      message: 'Server error'
     });
   }
 };
+
+
 
 
 // @desc    Get employees by shift
@@ -767,41 +840,41 @@ exports.getMyShiftsToday = async (req, res) => {
 exports.getShiftEmployees = async (req, res) => {
   try {
     const { Shift, Employee } = getModels(req);
-    
+
     const shift = await Shift.findOne({
       _id: req.params.id,
       tenant: req.tenant._id
     });
 
     if (!shift) {
-      return res.status(404).json({ 
-        success: false, 
-        message: 'Shift not found' 
+      return res.status(404).json({
+        success: false,
+        message: 'Shift not found'
       });
     }
 
     // Get employees from different assignment types
     const deptEmployees = shift.assignedDepartments.length > 0
       ? await Employee.find({
-          department: { $in: shift.assignedDepartments },
-          isActive: true,
-          tenant: req.tenant._id
-        }).select('name email department position assignedShift')
+        department: { $in: shift.assignedDepartments },
+        isActive: true,
+        tenant: req.tenant._id
+      }).select('name email department position assignedShift')
       : [];
 
     const roleEmployees = shift.assignedRoles.length > 0
       ? await Employee.find({
-          position: { $in: shift.assignedRoles },
-          isActive: true,
-          tenant: req.tenant._id
-        }).select('name email department position assignedShift')
+        position: { $in: shift.assignedRoles },
+        isActive: true,
+        tenant: req.tenant._id
+      }).select('name email department position assignedShift')
       : [];
 
     const directEmployees = shift.assignedEmployees.length > 0
       ? await Employee.find({
-          _id: { $in: shift.assignedEmployees },
-          isActive: true
-        }).select('name email department position assignedShift')
+        _id: { $in: shift.assignedEmployees },
+        isActive: true
+      }).select('name email department position assignedShift')
       : [];
 
     // Combine and deduplicate
@@ -823,9 +896,9 @@ exports.getShiftEmployees = async (req, res) => {
     });
   } catch (error) {
     console.error('Get shift employees error:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Server error' 
+    res.status(500).json({
+      success: false,
+      message: 'Server error'
     });
   }
 };
@@ -836,21 +909,21 @@ exports.getShiftEmployees = async (req, res) => {
 exports.getDepartments = async (req, res) => {
   try {
     const { Employee } = getModels(req);
-    
+
     const departments = await Employee.distinct('department', {
       tenant: req.tenant._id,
       isActive: true
     });
-    
+
     res.json({
       success: true,
       data: departments.filter(d => d && d.trim())
     });
   } catch (error) {
     console.error('Get departments error:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Server error' 
+    res.status(500).json({
+      success: false,
+      message: 'Server error'
     });
   }
 };
@@ -861,21 +934,21 @@ exports.getDepartments = async (req, res) => {
 exports.getRoles = async (req, res) => {
   try {
     const { Employee } = getModels(req);
-    
+
     const roles = await Employee.distinct('position', {
       tenant: req.tenant._id,
       isActive: true
     });
-    
+
     res.json({
       success: true,
       data: roles.filter(r => r && r.trim())
     });
   } catch (error) {
     console.error('Get roles error:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Server error' 
+    res.status(500).json({
+      success: false,
+      message: 'Server error'
     });
   }
 };
@@ -886,42 +959,42 @@ exports.getRoles = async (req, res) => {
 exports.getShiftSummary = async (req, res) => {
   try {
     const { Shift, Employee } = getModels(req);
-    
+
     const totalEmployees = await Employee.countDocuments({
       tenant: req.tenant._id,
       isActive: true
     });
-    
+
     const shifts = await Shift.find({
       tenant: req.tenant._id,
       isActive: true
     });
-    
+
     let coveredEmployees = 0;
     const shiftDetails = await Promise.all(shifts.map(async (shift) => {
       // Count unique employees covered by this shift
       const deptEmployees = shift.assignedDepartments.length > 0
         ? await Employee.countDocuments({
-            department: { $in: shift.assignedDepartments },
-            isActive: true,
-            tenant: req.tenant._id
-          })
+          department: { $in: shift.assignedDepartments },
+          isActive: true,
+          tenant: req.tenant._id
+        })
         : 0;
-      
+
       const roleEmployees = shift.assignedRoles.length > 0
         ? await Employee.countDocuments({
-            position: { $in: shift.assignedRoles },
-            isActive: true,
-            tenant: req.tenant._id
-          })
+          position: { $in: shift.assignedRoles },
+          isActive: true,
+          tenant: req.tenant._id
+        })
         : 0;
-      
+
       const directCount = shift.assignedEmployees.length;
-      
+
       // Simple sum (may have overlaps, but that's fine for summary)
       const shiftTotal = deptEmployees + roleEmployees + directCount;
       coveredEmployees += shiftTotal;
-      
+
       return {
         _id: shift._id,
         name: shift.name,
@@ -935,7 +1008,7 @@ exports.getShiftSummary = async (req, res) => {
         estimatedCoverage: shiftTotal
       };
     }));
-    
+
     res.json({
       success: true,
       data: {
@@ -948,9 +1021,9 @@ exports.getShiftSummary = async (req, res) => {
     });
   } catch (error) {
     console.error('Get shift summary error:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Server error' 
+    res.status(500).json({
+      success: false,
+      message: 'Server error'
     });
   }
 };

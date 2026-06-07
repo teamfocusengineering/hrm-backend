@@ -43,6 +43,14 @@ const attendanceSchema = new mongoose.Schema({
   checkOutPlace: {
     type: String
   },
+  checkInLocation: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Location'
+  },
+  checkOutLocation: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Location'
+  },
   workingHours: {
     type: Number,
     default: 0

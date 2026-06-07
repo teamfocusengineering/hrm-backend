@@ -415,6 +415,7 @@ const getSuperAdminModels = () => {
   const SuperAdmin = require('../models/SuperAdmin');
   const Tenant = require('../models/Tenant');
   const Company = require('../models/Company');
+  const Location = require('../models/Location');
 
   if (mainDBConnection) {
     const registerModel = (name, mod) => {
@@ -437,6 +438,7 @@ const getSuperAdminModels = () => {
       SuperAdmin: registerModel('SuperAdmin', SuperAdmin),
       Tenant: registerModel('Tenant', Tenant),
       Company: registerModel('Company', Company),
+      Location: registerModel('Location', Location),
     };
   }
 
@@ -444,6 +446,7 @@ const getSuperAdminModels = () => {
   return {
     SuperAdmin,
     Tenant,
+    Location,
   };
 };
 

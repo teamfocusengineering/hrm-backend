@@ -1,3 +1,4 @@
+require('node:dns').setServers(['8.8.8.8', '1.1.1.1']);
 const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
@@ -82,28 +83,39 @@ const startServer = async () => {
   app.use('/api/dashboard', require('./routes/dashboard'));
   app.use('/api/company', require('./routes/company'));
   app.use('/api/permissions', require('./routes/permissions'));
-  // Add these with your other app.use routes
+
   app.use('/api/projects', require('./routes/projects'));
+
   // Mount task progress routes before generic task routes to ensure
   // more specific endpoints (like /my-updates/today) are matched first.
   app.use('/api/tasks', require('./routes/taskProgress'));
   app.use('/api/tasks', require('./routes/tasks'));
-app.use('/api/notifications', require('./routes/notifications'));
-app.use('/api/team', require('./routes/team'));
-app.use('/api/department-settings', require('./routes/departmentSettings'));
+
+  app.use('/api/notifications', require('./routes/notifications'));
+  app.use('/api/team', require('./routes/team'));
+  app.use('/api/department-settings', require('./routes/departmentSettings'));
+
+  // shift routes
+  app.use('/api/shifts', require('./routes/shiftRoutes'));
+
+  // location routes (tenant scoped)
+  app.use('/api/locations', require('./routes/locations'));
+
+  // tenant-admin location routes (tenant scoped)
+  app.use('/api/tenant-admin/locations', require('./routes/tenant-admin-locations'));
+
+  // super-admin locations routes (tenant scoped via ?tenantId=...)
+  app.use('/api/super-admin/locations', require('./routes/super-admin-locations'));
 
 
-//shift routes 
-app.use('/api/shifts', require('./routes/shiftRoutes'));
 
-  // Health check endpoint
-  app.get('/api/health', (req, res) => {
-    res.json({ 
-      status: 'OK', 
-      timestamp: new Date().toISOString(),
-      tenant: req.tenant ? req.tenant.subdomain : 'main'
-    });
-  });
+  
+
+
+
+
+
+  
 
   // Error handling middleware
   app.use((err, req, res, next) => {
@@ -129,6 +141,7 @@ app.use('/api/shifts', require('./routes/shiftRoutes'));
   const PORT = process.env.PORT || 5000;
 
   const server = http.createServer(app);
+
 
   const io = new Server(server, {
     cors: {

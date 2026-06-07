@@ -1,67 +1,65 @@
+//attendencecontroller.js
 const Attendance = require('../models/Attendance');
 const Employee = require('../models/Employee');
 const moment = require('moment');
 const reverseGeocode = require('../utils/reverseGeocode');
 const Shift = require('../models/Shift');
+const mongoose = require('mongoose');
 
 
 exports.checkIn = async (req, res) => {
   try {
-    const { Attendance, Employee, Shift, DepartmentSetting } = req.models;
+    const { Attendance, Employee, Shift } = req.models;
     const today = moment().startOf('day');
+    const employeeId = req.user?.employee?._id || req.user?.employee;
+
+    if (!employeeId) {
+      return res.status(400).json({ message: 'Employee profile not found' });
+    }
 
     // Get employee details
-    const employee = await Employee.findById(req.user.employee._id);
+    const employee = await Employee.findById(employeeId);
     if (!employee) {
       return res.status(404).json({ message: 'Employee not found' });
     }
-
-    // Check if department requires shift
-    const deptSetting = await DepartmentSetting.findOne({
-      tenant: req.tenant._id,
-      departmentName: employee.department
-    });
-
-    const isShiftRequired = deptSetting ? deptSetting.shiftRequired : false;
 
     // Determine which shift to check into
     let targetShift = null;
     let shiftSource = null;
     
     if (req.body.shiftId) {
+      if (!mongoose.isValidObjectId(req.body.shiftId)) {
+        return res.status(400).json({ message: 'Please select a valid shift' });
+      }
       targetShift = await Shift.findOne({
         _id: req.body.shiftId,
         tenant: req.tenant._id,
         isActive: true
       });
-      
-      if (targetShift) {
-        const isAssigned = (
-          targetShift.assignedEmployees?.includes(employee._id) || 
-          targetShift.assignedDepartments?.includes(employee.department) || 
-          targetShift.assignedRoles?.includes(employee.position)
-        );
-        
-        if (!isAssigned) {
-          return res.status(403).json({ message: 'You are not assigned to this shift' });
-        }
-        shiftSource = 'requested';
+
+      if (!targetShift) {
+        return res.status(404).json({ message: 'Shift not found' });
       }
+
+      const directEmployeeIds = (targetShift.assignedEmployees || []).map(id => id.toString());
+      const isAssigned = (
+        directEmployeeIds.includes(employee._id.toString()) ||
+        (targetShift.assignedDepartments || []).includes(employee.department) ||
+        (targetShift.assignedRoles || []).includes(employee.position)
+      );
+
+      if (!isAssigned) {
+        return res.status(403).json({ message: 'You are not assigned to this shift' });
+      }
+      shiftSource = 'requested';
     }
 
-    // Fallback to default effective shift
-    if (!targetShift) {
-      const shiftResult = await employee.getEffectiveShift(req.models);
-      targetShift = shiftResult.shift;
-      shiftSource = shiftResult.source;
-    }
-
-    if (!targetShift && isShiftRequired) {
-      return res.status(400).json({
-        message: `Department "${employee.department}" requires shift assignment. Please contact administrator.`,
-        requiresShift: true
-      });
-    }
+    // if (!targetShift && isShiftRequired) {
+    //   return res.status(400).json({
+    //     message: `Department "${employee.department}" requires shift assignment. Please contact administrator.`,
+    //     requiresShift: true
+    //   });
+    // }
 
     // ✅ CRITICAL FIX: Check if shift exists and validate check-in time
     if (targetShift) {
@@ -93,7 +91,7 @@ exports.checkIn = async (req, res) => {
       
       // Check if already checked in for this shift today
       const existingAttendance = await Attendance.findOne({
-        employee: req.user.employee._id,
+        employee: employeeId,
         date: {
           $gte: today.toDate(),
           $lte: moment(today).endOf('day').toDate()
@@ -107,6 +105,24 @@ exports.checkIn = async (req, res) => {
         });
       }
 
+      const activeAttendance = await Attendance.findOne({
+        employee: employeeId,
+        date: {
+          $gte: today.toDate(),
+          $lte: moment(today).endOf('day').toDate()
+        },
+        $or: [
+          { checkOut: { $exists: false } },
+          { checkOut: null }
+        ]
+      });
+
+      if (activeAttendance) {
+        return res.status(400).json({
+          message: 'Please check out from your current shift before checking in to another shift.'
+        });
+      }
+
       // Determine attendance status
       let attendanceStatus = 'present';
       if (checkInStatus.isHalfDay) {
@@ -115,11 +131,11 @@ exports.checkIn = async (req, res) => {
 
       // Create attendance record
       const attendanceData = {
-        employee: req.user.employee._id,
+        employee: employeeId,
         date: new Date(),
         checkIn: new Date(),
         shift: targetShift._id,
-        shiftSource: shiftSource,
+        shiftSource: shiftSource || 'requested',
         shiftName: targetShift.displayName,
         isLateCheckIn: checkInStatus.isLate || false,
         checkInStatus: checkInStatus.status || null,
@@ -128,12 +144,19 @@ exports.checkIn = async (req, res) => {
 
       // Add location if provided
       if (req.body.checkInLat !== undefined && req.body.checkInLat !== null) {
-        attendanceData.checkInLat = Number(req.body.checkInLat);
-        attendanceData.checkInLng = Number(req.body.checkInLng);
-        attendanceData.checkInAccuracy = Number(req.body.checkInAccuracy);
+        const latitude = Number(req.body.checkInLat);
+        const longitude = Number(req.body.checkInLng);
+        const accuracy = Number(req.body.checkInAccuracy);
+
+        if (Number.isFinite(latitude)) attendanceData.checkInLat = latitude;
+        if (Number.isFinite(longitude)) attendanceData.checkInLng = longitude;
+        if (Number.isFinite(accuracy)) attendanceData.checkInAccuracy = accuracy;
       }
       if (req.body.checkInPlace) {
         attendanceData.checkInPlace = String(req.body.checkInPlace);
+      }
+      if (req.body.checkInLocation) {
+        attendanceData.checkInLocation = req.body.checkInLocation;
       }
 
       const attendance = await Attendance.create(attendanceData);
@@ -152,7 +175,7 @@ exports.checkIn = async (req, res) => {
     } else {
       // No shift assigned - allow check-in with default rules
       const existingAttendance = await Attendance.findOne({
-        employee: req.user.employee._id,
+        employee: employeeId,
         date: {
           $gte: today.toDate(),
           $lte: moment(today).endOf('day').toDate()
@@ -165,12 +188,30 @@ exports.checkIn = async (req, res) => {
         });
       }
 
-      const attendance = await Attendance.create({
-        employee: req.user.employee._id,
+      const attendanceData = {
+        employee: employeeId,
         date: new Date(),
         checkIn: new Date(),
         status: 'present'
-      });
+      };
+
+      if (req.body.checkInLat !== undefined && req.body.checkInLat !== null) {
+        const latitude = Number(req.body.checkInLat);
+        const longitude = Number(req.body.checkInLng);
+        const accuracy = Number(req.body.checkInAccuracy);
+
+        if (Number.isFinite(latitude)) attendanceData.checkInLat = latitude;
+        if (Number.isFinite(longitude)) attendanceData.checkInLng = longitude;
+        if (Number.isFinite(accuracy)) attendanceData.checkInAccuracy = accuracy;
+      }
+      if (req.body.checkInPlace) {
+        attendanceData.checkInPlace = String(req.body.checkInPlace);
+      }
+      if (req.body.checkInLocation) {
+        attendanceData.checkInLocation = req.body.checkInLocation;
+      }
+
+      const attendance = await Attendance.create(attendanceData);
 
       res.status(201).json({
         success: true,
@@ -180,6 +221,13 @@ exports.checkIn = async (req, res) => {
 
   } catch (error) {
     console.error('Check in error:', error);
+    if (error.name === 'ValidationError' || error.name === 'CastError' || error.code === 11000) {
+      return res.status(400).json({
+        message: error.code === 11000
+          ? 'Attendance has already been recorded for this shift.'
+          : error.message
+      });
+    }
     res.status(500).json({ message: 'Server error: ' + error.message });
   }
 };
@@ -238,13 +286,14 @@ exports.checkOut = async (req, res) => {
     }
 
     // Accept location payload for checkout
-    const { checkOutLat, checkOutLng, checkOutAccuracy, checkOutPlace } = req.body || {};
+    const { checkOutLat, checkOutLng, checkOutAccuracy, checkOutPlace, checkOutLocation } = req.body || {};
 
     attendance.checkOut = new Date();
     if (checkOutLat !== undefined) attendance.checkOutLat = Number(checkOutLat);
     if (checkOutLng !== undefined) attendance.checkOutLng = Number(checkOutLng);
     if (checkOutAccuracy !== undefined) attendance.checkOutAccuracy = Number(checkOutAccuracy);
     if (checkOutPlace) attendance.checkOutPlace = String(checkOutPlace);
+    if (checkOutLocation) attendance.checkOutLocation = checkOutLocation;
 
     // Update shift checkout status
     attendance.isEarlyCheckOut = validationResult.isEarly || false;
@@ -262,19 +311,12 @@ exports.checkOut = async (req, res) => {
     }
 
     // After getting employee, add this check
-    const deptSetting = await DepartmentSetting.findOne({
-      tenant: req.tenant._id,
-      departmentName: employee.department
-    });
+    // const deptSetting = await DepartmentSetting.findOne({
+    //   tenant: req.tenant._id,
+    //   departmentName: employee.department
+    // });
 
-    const isShiftRequired = deptSetting ? deptSetting.shiftRequired : false;
-
-    if (isShiftRequired && !shiftResult.shift) {
-      return res.status(400).json({
-        message: `Department "${employee.department}" requires shift assignment. Cannot checkout.`,
-        requiresShift: true
-      });
-    }
+    //const isShiftRequired = deptSetting ? deptSetting.shiftRequired : false;
 
     await attendance.save();
 
@@ -291,6 +333,50 @@ exports.checkOut = async (req, res) => {
   } catch (error) {
     console.error('Check out error:', error);
     res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// Helper to manually populate checkInLocation and checkOutLocation from SuperAdmin DB
+const populateLocations = async (attendanceRecords) => {
+  if (!attendanceRecords || attendanceRecords.length === 0) return attendanceRecords;
+
+  try {
+    const { getSuperAdminModels } = require('../config/db');
+    const { Location } = getSuperAdminModels();
+
+    // Extract all unique location ObjectIds
+    const locationIds = new Set();
+    attendanceRecords.forEach(record => {
+      if (record.checkInLocation) locationIds.add(record.checkInLocation.toString());
+      if (record.checkOutLocation) locationIds.add(record.checkOutLocation.toString());
+    });
+
+    if (locationIds.size === 0) return attendanceRecords;
+
+    // Fetch locations from super-admin DB
+    const locations = await Location.find({
+      _id: { $in: Array.from(locationIds) }
+    }).select('name address');
+
+    const locationMap = locations.reduce((map, loc) => {
+      map[loc._id.toString()] = loc;
+      return map;
+    }, {});
+
+    // Map location details to the attendance records
+    return attendanceRecords.map(record => {
+      const recordObj = typeof record.toObject === 'function' ? record.toObject() : record;
+      if (record.checkInLocation) {
+        recordObj.checkInLocation = locationMap[record.checkInLocation.toString()] || { _id: record.checkInLocation };
+      }
+      if (record.checkOutLocation) {
+        recordObj.checkOutLocation = locationMap[record.checkOutLocation.toString()] || { _id: record.checkOutLocation };
+      }
+      return recordObj;
+    });
+  } catch (error) {
+    console.error('Error manually populating locations:', error);
+    return attendanceRecords;
   }
 };
 
@@ -315,9 +401,12 @@ exports.getMyAttendance = async (req, res) => {
     const attendance = await Attendance.find({
       employee: req.user.employee._id,
       date: { $gte: startDate, $lte: endDate }
-    }).sort({ date: -1 });
+    })
+      .sort({ date: -1 });
 
-    res.json(attendance);
+    const populatedAttendance = await populateLocations(attendance);
+
+    res.json(populatedAttendance);
   } catch (error) {
     console.error('Get my attendance error:', error);
     res.status(500).json({ message: 'Server error' });
@@ -353,7 +442,9 @@ exports.getAllAttendance = async (req, res) => {
       .populate('employee', 'name email department position')
       .sort({ date: -1 });
 
-    res.json(attendance);
+    const populatedAttendance = await populateLocations(attendance);
+
+    res.json(populatedAttendance);
   } catch (error) {
     console.error('Get all attendance error:', error);
     res.status(500).json({ message: 'Server error' });
@@ -493,8 +584,17 @@ exports.getTodayShiftsStatus = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Employee not found' });
     }
     
+    // Get ALL today's attendance records for this employee first
+    const todayAttendances = await Attendance.find({
+      employee: req.user.employee._id,
+      date: {
+        $gte: today.toDate(),
+        $lte: moment(today).endOf('day').toDate()
+      }
+    });
+
     // Get ALL shifts applicable to this employee
-    const applicableShifts = await Shift.find({
+    let applicableShifts = await Shift.find({
       tenant: req.tenant._id,
       isActive: true,
       $or: [
@@ -504,14 +604,28 @@ exports.getTodayShiftsStatus = async (req, res) => {
       ]
     }).sort({ startTime: 1 });
 
-    // Get ALL today's attendance records for this employee
-    const todayAttendances = await Attendance.find({
-      employee: req.user.employee._id,
-      date: {
-        $gte: today.toDate(),
-        $lte: moment(today).endOf('day').toDate()
-      }
-    });
+    // IMPORTANT: union with shifts referenced by today's attendance.
+    // This guarantees the dashboard reflects a successful check-in
+    // even if shift assignment filtering doesn't match the employee's record fields.
+    const attendanceShiftIds = new Set(
+      todayAttendances
+        .map(a => a.shift)
+        .filter(Boolean)
+        .map(s => s.toString())
+    );
+
+    if (attendanceShiftIds.size > 0) {
+      const shiftsFromAttendance = await Shift.find({
+        tenant: req.tenant._id,
+        isActive: true,
+        _id: { $in: Array.from(attendanceShiftIds) }
+      });
+
+      const byId = new Map();
+      [...applicableShifts, ...shiftsFromAttendance].forEach(s => byId.set(s._id.toString(), s));
+      applicableShifts = Array.from(byId.values()).sort({ startTime: 1 });
+    }
+
 
     console.log('Today attendances found:', todayAttendances.length);
     todayAttendances.forEach(att => {

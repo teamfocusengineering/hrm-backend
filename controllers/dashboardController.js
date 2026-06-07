@@ -133,13 +133,20 @@ exports.getEmployeeDashboard = async (req, res) => {
     const today = moment().startOf('day');
     const todayEnd = moment(today).endOf('day');
     
-    const todaysAttendance = await AttendanceModel.findOne({
+    const todayAttendanceRecords = await AttendanceModel.find({
       employee: employeeId,
       date: {
         $gte: today.toDate(),
         $lte: todayEnd.toDate()
       }
-    }).sort({ createdAt: -1 }); // Get latest if multiple
+    }).sort({ checkIn: -1, createdAt: -1 });
+
+    const activeAttendance = todayAttendanceRecords.find(record => record.checkIn && !record.checkOut);
+    const todaysAttendance = activeAttendance || todayAttendanceRecords[0] || null;
+
+    const attendanceShift = todaysAttendance?.shift
+      ? await ShiftModel.findById(todaysAttendance.shift)
+      : null;
 
     // ✅ If no attendance found, return null
     // ✅ Get employee with shift info for today
@@ -211,12 +218,16 @@ exports.getEmployeeDashboard = async (req, res) => {
         _id: todaysAttendance._id,
         checkIn: todaysAttendance.checkIn,
         checkOut: todaysAttendance.checkOut,
+        isActiveShift: Boolean(todaysAttendance.checkIn && !todaysAttendance.checkOut),
+        todayAttendanceCount: todayAttendanceRecords.length,
         status: todaysAttendance.status,
         workingHours: todaysAttendance.workingHours || 0,
         checkInPlace: todaysAttendance.checkInPlace,
         checkOutPlace: todaysAttendance.checkOutPlace,
         isLateCheckIn: todaysAttendance.isLateCheckIn,
-        shiftName: todaysAttendance.shiftName
+        shiftName: todaysAttendance.shiftName,
+        shiftStartTime: attendanceShift?.startTime,
+        shiftEndTime: attendanceShift?.endTime
       } : null,
       todaysShift: todaysShift ? {
         _id: todaysShift._id,
