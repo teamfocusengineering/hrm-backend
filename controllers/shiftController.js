@@ -777,6 +777,7 @@ exports.getMyShiftsToday = async (req, res) => {
         .filter(a => a?.shift)
         .map(a => [a.shift.toString(), a])
     );
+    const hasActiveAttendance = (todayAttendances || []).some(a => a?.checkIn && !a?.checkOut);
 
     let applicableShifts;
     try {
@@ -812,7 +813,7 @@ exports.getMyShiftsToday = async (req, res) => {
         checkIn: attendance?.checkIn || null,
         checkOut: attendance?.checkOut || null,
         workingHours: attendance?.workingHours || 0,
-        canCheckIn: status === 'pending' && checkInStatus.canCheckIn,
+        canCheckIn: !hasActiveAttendance && status === 'pending' && checkInStatus.canCheckIn,
         canCheckOut: status === 'checked_in',
         checkInWindow: checkInStatus,
       };

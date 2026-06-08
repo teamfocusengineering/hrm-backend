@@ -648,6 +648,8 @@ exports.getTodayShiftsStatus = async (req, res) => {
       console.log(`- Shift: ${att.shiftName}, CheckIn: ${!!att.checkIn}, CheckOut: ${!!att.checkOut}`);
     });
 
+    const hasActiveAttendance = todayAttendances.some(att => att.checkIn && !att.checkOut);
+
     // Build shift statuses - EACH SHIFT INDEPENDENTLY
     const shiftsWithStatus = applicableShifts.map(shift => {
       // Find attendance for THIS SPECIFIC shift only
@@ -670,7 +672,7 @@ exports.getTodayShiftsStatus = async (req, res) => {
       } else {
         // No attendance for this shift yet - check if check-in is allowed
         const checkInStatus = shift.getShiftStatus(now, 'checkin');
-        canCheckIn = checkInStatus.canCheckIn;
+        canCheckIn = !hasActiveAttendance && checkInStatus.canCheckIn;
       }
       
       // Check if shift can be checked in (time window)
