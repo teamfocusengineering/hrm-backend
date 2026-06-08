@@ -747,10 +747,21 @@ exports.getMyShiftsToday = async (req, res) => {
       }
       todayAttendances = await Attendance.find({
         employee: req.user.employee._id,
-        date: {
-          $gte: today,
-          $lte: todayEnd
-        }
+        $or: [
+          {
+            date: {
+              $gte: today,
+              $lte: todayEnd
+            }
+          },
+          {
+            checkIn: { $exists: true },
+            $or: [
+              { checkOut: { $exists: false } },
+              { checkOut: null }
+            ]
+          }
+        ]
       }).select('shift checkIn checkOut workingHours').lean();
     } catch (err) {
       console.error('getMyShiftsToday: Attendance.find failed', {

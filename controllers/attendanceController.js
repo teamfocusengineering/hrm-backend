@@ -107,10 +107,6 @@ exports.checkIn = async (req, res) => {
 
       const activeAttendance = await Attendance.findOne({
         employee: employeeId,
-        date: {
-          $gte: today.toDate(),
-          $lte: moment(today).endOf('day').toDate()
-        },
         $or: [
           { checkOut: { $exists: false } },
           { checkOut: null }
@@ -188,6 +184,20 @@ exports.checkIn = async (req, res) => {
         });
       }
 
+      const activeAttendance = await Attendance.findOne({
+        employee: employeeId,
+        $or: [
+          { checkOut: { $exists: false } },
+          { checkOut: null }
+        ]
+      });
+
+      if (activeAttendance) {
+        return res.status(400).json({
+          message: 'Please check out from your current attendance before checking in again.'
+        });
+      }
+
       const attendanceData = {
         employee: employeeId,
         date: new Date(),
@@ -239,18 +249,13 @@ exports.checkIn = async (req, res) => {
 exports.checkOut = async (req, res) => {
   try {
     const { Attendance, Employee, Shift, DepartmentSetting } = req.models;
-    const today = moment().startOf('day');
 
     // Get employee with shift
     const employee = await Employee.findById(req.user.employee._id);
 
-    // Find active check-in for today (any shift)
+    // Find the latest unfinished check-in, including night shifts that crossed midnight.
     const attendance = await Attendance.findOne({
       employee: req.user.employee._id,
-      date: {
-        $gte: today.toDate(),
-        $lte: moment(today).endOf('day').toDate()
-      },
       $or: [
         { checkOut: { $exists: false } },
         { checkOut: null }
@@ -258,7 +263,7 @@ exports.checkOut = async (req, res) => {
     }).sort({ checkIn: -1 }); // Get latest active check-in
 
     if (!attendance) {
-      return res.status(400).json({ message: "No active check-in found for today. Please check in first." });
+      return res.status(400).json({ message: "No active check-in found. Please check in first." });
     }
 
     // Get the shift associated with this attendance
@@ -584,13 +589,24 @@ exports.getTodayShiftsStatus = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Employee not found' });
     }
     
-    // Get ALL today's attendance records for this employee first
+    // Get today's records plus any unfinished check-in from a previous day.
     const todayAttendances = await Attendance.find({
       employee: req.user.employee._id,
-      date: {
-        $gte: today.toDate(),
-        $lte: moment(today).endOf('day').toDate()
-      }
+      $or: [
+        {
+          date: {
+            $gte: today.toDate(),
+            $lte: moment(today).endOf('day').toDate()
+          }
+        },
+        {
+          checkIn: { $exists: true },
+          $or: [
+            { checkOut: { $exists: false } },
+            { checkOut: null }
+          ]
+        }
+      ]
     });
 
     // Get ALL shifts applicable to this employee

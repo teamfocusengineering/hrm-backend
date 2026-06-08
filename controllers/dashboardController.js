@@ -135,10 +135,21 @@ exports.getEmployeeDashboard = async (req, res) => {
     
     const todayAttendanceRecords = await AttendanceModel.find({
       employee: employeeId,
-      date: {
-        $gte: today.toDate(),
-        $lte: todayEnd.toDate()
-      }
+      $or: [
+        {
+          date: {
+            $gte: today.toDate(),
+            $lte: todayEnd.toDate()
+          }
+        },
+        {
+          checkIn: { $exists: true },
+          $or: [
+            { checkOut: { $exists: false } },
+            { checkOut: null }
+          ]
+        }
+      ]
     }).sort({ checkIn: -1, createdAt: -1 });
 
     const activeAttendance = todayAttendanceRecords.find(record => record.checkIn && !record.checkOut);
