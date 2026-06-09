@@ -368,6 +368,19 @@ const populateLocations = async (attendanceRecords) => {
   }
 };
 
+const resolveLocationName = async (locationId) => {
+  if (!locationId || !mongoose.isValidObjectId(locationId)) return '';
+
+  try {
+    const { getSuperAdminModels } = require('../config/db');
+    const { Location } = getSuperAdminModels();
+    const location = await Location.findById(locationId).select('name address');
+    return location?.name || location?.address || '';
+  } catch (error) {
+    return '';
+  }
+};
+
 // @desc    Get employee's attendance
 // @route   GET /api/attendance/my-attendance
 // @access  Private
@@ -454,6 +467,153 @@ exports.getAllAttendance = async (req, res) => {
     res.json(populatedAttendance);
   } catch (error) {
     console.error('Get all attendance error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// @desc    Edit attendance check-in/check-out time (Tenant Admin with permission)
+// @route   PUT /api/attendance/:id/time
+// @access  Private/Admin
+exports.updateAttendanceTime = async (req, res) => {
+  try {
+    const { Attendance, Employee } = req.models;
+
+    if (req.user.role !== 'admin' || !req.user.canEditAttendanceTime) {
+      return res.status(403).json({ message: 'You do not have permission to edit attendance time.' });
+    }
+
+    const { checkIn, checkOut, reason, status, dayType, shiftId, locationId } = req.body || {};
+    if (!checkIn) {
+      return res.status(400).json({ message: 'Check-in time is required.' });
+    }
+
+    const newCheckIn = new Date(checkIn);
+    if (Number.isNaN(newCheckIn.getTime())) {
+      return res.status(400).json({ message: 'Invalid check-in time.' });
+    }
+
+    let newCheckOut = null;
+    if (checkOut !== undefined && checkOut !== null && String(checkOut).trim() !== '') {
+      newCheckOut = new Date(checkOut);
+      if (Number.isNaN(newCheckOut.getTime())) {
+        return res.status(400).json({ message: 'Invalid checkout time.' });
+      }
+
+      if (newCheckOut <= newCheckIn) {
+        return res.status(400).json({ message: 'Checkout time must be after check-in time.' });
+      }
+    }
+
+    if (!mongoose.isValidObjectId(req.params.id)) {
+      return res.status(400).json({ message: 'Invalid attendance record.' });
+    }
+
+    const attendance = await Attendance.findById(req.params.id).populate('employee', 'name email tenant');
+    if (!attendance) {
+      return res.status(404).json({ message: 'Attendance record not found.' });
+    }
+
+    const employee = attendance.employee && attendance.employee._id
+      ? attendance.employee
+      : await Employee.findById(attendance.employee);
+
+    if (!employee) {
+      return res.status(404).json({ message: 'Employee not found for attendance record.' });
+    }
+
+    const employeeTenant = employee.tenant ? employee.tenant.toString() : null;
+    const requestTenant = req.tenant?._id?.toString();
+    if (employeeTenant && requestTenant && employeeTenant !== requestTenant) {
+      return res.status(403).json({ message: 'Access denied for this tenant' });
+    }
+
+    const oldCheckIn = attendance.checkIn || null;
+    const oldCheckOut = attendance.checkOut || null;
+    const oldStatus = attendance.status || '';
+    const oldShiftName = attendance.shiftName || attendance.shift?.displayName || attendance.shift?.name || '';
+    const oldLocationName = await resolveLocationName(attendance.checkInLocation);
+    const oldWorkingHours = Number(attendance.workingHours || 0);
+
+    const requestedStatus = status === 'absent'
+      ? 'absent'
+      : (dayType === 'half-day' ? 'half-day' : 'present');
+    let selectedShift = null;
+    if (shiftId) {
+      if (!mongoose.isValidObjectId(shiftId)) {
+        return res.status(400).json({ message: 'Invalid shift.' });
+      }
+
+      selectedShift = await req.models.Shift.findOne({
+        _id: shiftId,
+        tenant: req.tenant._id,
+        isActive: true
+      });
+
+      if (!selectedShift) {
+        return res.status(404).json({ message: 'Shift not found.' });
+      }
+    }
+
+    if (locationId && !mongoose.isValidObjectId(locationId)) {
+      return res.status(400).json({ message: 'Invalid location.' });
+    }
+    const newLocationName = await resolveLocationName(locationId);
+
+    attendance.checkIn = newCheckIn;
+    attendance.checkOut = newCheckOut;
+    attendance.date = moment(newCheckIn).startOf('day').toDate();
+    attendance.workingHours = requestedStatus === 'absent' ? 0 : (newCheckOut ? calculateWorkingHours({ checkIn: newCheckIn, checkOut: newCheckOut }) : 0);
+    attendance.adjustedHours = attendance.workingHours;
+    attendance.status = requestedStatus;
+    attendance.shift = selectedShift ? selectedShift._id : null;
+    attendance.shiftSource = selectedShift ? 'requested' : null;
+    attendance.shiftName = selectedShift ? selectedShift.displayName : null;
+    attendance.checkInLocation = locationId || null;
+    attendance.attendanceTimeEditAudit = attendance.attendanceTimeEditAudit || [];
+    attendance.attendanceTimeEditAudit.push({
+      editedBy: req.user._id,
+      editedByName: req.user.employee?.name || '',
+      editedByEmail: req.user.email || req.user.employee?.email || '',
+      oldCheckIn,
+      oldCheckOut,
+      newCheckIn,
+      newCheckOut,
+      oldStatus,
+      newStatus: requestedStatus,
+      oldShiftName,
+      newShiftName: selectedShift ? selectedShift.displayName : '',
+      oldLocationName,
+      newLocationName,
+      oldWorkingHours,
+      newWorkingHours: attendance.workingHours,
+      editedAt: new Date(),
+      reason: reason ? String(reason).trim() : ''
+    });
+
+    await attendance.save();
+
+    if (requestedStatus === 'absent' || requestedStatus === 'half-day' || requestedStatus === 'present') {
+      attendance.status = requestedStatus;
+      attendance.workingHours = requestedStatus === 'absent' ? 0 : attendance.workingHours;
+      attendance.adjustedHours = requestedStatus === 'absent' ? 0 : attendance.adjustedHours;
+      await Attendance.updateOne(
+        { _id: attendance._id },
+        {
+          $set: {
+            status: attendance.status,
+            workingHours: attendance.workingHours,
+            adjustedHours: attendance.adjustedHours
+          }
+        }
+      );
+    }
+    await attendance.populate('employee', 'name email department position');
+    await attendance.populate('shift', 'name displayName startTime endTime isNightShift');
+
+    const [populated] = await populateLocations([attendance]);
+    res.json(populated || attendance);
+  } catch (error) {
+    console.error('Update attendance time error:', error);
     res.status(500).json({ message: 'Server error' });
   }
 };

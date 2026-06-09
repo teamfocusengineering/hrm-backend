@@ -11,7 +11,9 @@ const {
   changePassword,
   getPublicTenants,
   createAdmin,
-  getTenantStats
+  getTenantStats,
+  getTenantAdmins,
+  updateAdminAttendancePermission
 } = require('../controllers/superAdminController');
 const {
   getAnalyticsOverview,
@@ -50,6 +52,8 @@ router.post('/tenants/:tenantId/admins', [
   superAdminAuth,
   param('tenantId').isLength({ min: 24, max: 100 }).withMessage('tenantId param seems invalid')
 ], createAdmin);
+router.get('/tenants/:tenantId/admins', superAdminAuth, getTenantAdmins);
+router.put('/tenants/:tenantId/admins/:adminId/attendance-time-permission', superAdminAuth, updateAdminAttendancePermission);
 router.get('/stats/tenants', superAdminAuth, getTenantStats);
 
 // NEW ANALYTICS ROUTES

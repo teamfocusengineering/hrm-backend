@@ -411,6 +411,66 @@ exports.createAdmin = async (req, res) => {
   }
 };
 
+exports.getTenantAdmins = async (req, res) => {
+  try {
+    const { Tenant } = getMainModels();
+    const { tenantId } = req.params;
+    const tenant = await Tenant.findById(tenantId);
+
+    if (!tenant) {
+      return res.status(404).json({ message: 'Tenant not found' });
+    }
+
+    const tenantConnection = await connectTenantDB(tenant._id.toString(), tenant.companyName);
+    const models = await getTenantModels(tenantConnection);
+    const admins = await models.User.find({ role: 'admin' })
+      .populate('employee', 'name email department position isActive')
+      .select('email role employee isActive canEditAttendanceTime createdAt')
+      .sort({ createdAt: -1 });
+
+    res.json(admins);
+  } catch (error) {
+    console.error('Get tenant admins error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+exports.updateAdminAttendancePermission = async (req, res) => {
+  try {
+    const { Tenant } = getMainModels();
+    const { tenantId, adminId } = req.params;
+    const tenant = await Tenant.findById(tenantId);
+
+    if (!tenant) {
+      return res.status(404).json({ message: 'Tenant not found' });
+    }
+
+    const tenantConnection = await connectTenantDB(tenant._id.toString(), tenant.companyName);
+    const models = await getTenantModels(tenantConnection);
+    const admin = await models.User.findOne({ _id: adminId, role: 'admin' })
+      .populate('employee', 'name email department position isActive');
+
+    if (!admin) {
+      return res.status(404).json({ message: 'Tenant admin not found' });
+    }
+
+    admin.canEditAttendanceTime = Boolean(req.body.canEditAttendanceTime);
+    await admin.save();
+
+    res.json({
+      _id: admin._id,
+      email: admin.email,
+      role: admin.role,
+      employee: admin.employee,
+      isActive: admin.isActive,
+      canEditAttendanceTime: admin.canEditAttendanceTime
+    });
+  } catch (error) {
+    console.error('Update admin attendance permission error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
 // Get all tenants
 exports.getTenants = async (req, res) => {
   try {

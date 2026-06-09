@@ -108,12 +108,47 @@ const attendanceSchema = new mongoose.Schema({
     type: String,
     enum: ['on-time', 'early', 'late', null],
     default: null
-  }
+  },
+  attendanceTimeEditAudit: [{
+    editedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User'
+    },
+    editedByName: String,
+    editedByEmail: String,
+    oldCheckIn: Date,
+    oldCheckOut: Date,
+    newCheckIn: Date,
+    newCheckOut: Date,
+    oldStatus: String,
+    newStatus: String,
+    oldShiftName: String,
+    newShiftName: String,
+    oldLocationName: String,
+    newLocationName: String,
+    oldWorkingHours: Number,
+    newWorkingHours: Number,
+    editedAt: {
+      type: Date,
+      default: Date.now
+    },
+    reason: String
+  }]
 }, {
   timestamps: true
 },
 
 );
+
+const calculateHoursBetween = (checkInValue, checkOutValue) => {
+  if (!checkInValue || !checkOutValue) return 0;
+  const checkIn = new Date(checkInValue);
+  const checkOut = new Date(checkOutValue);
+  const diffMs = checkOut.getTime() - checkIn.getTime();
+
+  if (!Number.isFinite(diffMs) || diffMs <= 0) return 0;
+  return Number((diffMs / (1000 * 60 * 60)).toFixed(2));
+};
 
 // Calculate working hours before saving (exclude permission overlaps)
 attendanceSchema.pre('save', function(next) {
@@ -121,7 +156,7 @@ attendanceSchema.pre('save', function(next) {
     if (this.checkIn && this.checkOut && this.permissions && this.permissions.length > 0) {
       const checkIn = moment(this.checkIn);
       const checkOut = moment(this.checkOut);
-      const rawHours = checkOut.diff(checkIn, 'hours', true);
+      const rawHours = calculateHoursBetween(this.checkIn, this.checkOut);
       this.workingHours = rawHours;
       
       let permissionOverlapHours = 0;
@@ -155,9 +190,8 @@ attendanceSchema.pre('save', function(next) {
       }
     } else if (this.checkOut) {
       // No permissions, normal calculation
-      const diff = this.checkOut - this.checkIn;
-      const rawHours = (diff / (1000 * 60 * 60)).toFixed(2);
-      this.workingHours = parseFloat(rawHours);
+      const rawHours = calculateHoursBetween(this.checkIn, this.checkOut);
+      this.workingHours = rawHours;
       this.adjustedHours = this.workingHours;
       
       if (this.adjustedHours < 4) {
@@ -165,6 +199,9 @@ attendanceSchema.pre('save', function(next) {
       } else {
         this.status = 'present';
       }
+    } else {
+      this.workingHours = 0;
+      this.adjustedHours = 0;
     }
   } catch (error) {
     console.error('Error calculating attendance hours:', error);

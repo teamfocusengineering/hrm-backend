@@ -42,6 +42,10 @@ role: {
     // Default: allowed by default per requested behaviour
     default: true
   },
+  canEditAttendanceTime: {
+    type: Boolean,
+    default: false
+  },
   lastLogin: {
     type: Date
   },

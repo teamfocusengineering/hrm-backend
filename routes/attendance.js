@@ -8,7 +8,8 @@ const {
   getAttendanceSummary,
   getAttendanceWithPermissions,
   getAttendanceStatus,
-  getTodayShiftsStatus
+  getTodayShiftsStatus,
+  updateAttendanceTime
 } = require('../controllers/attendanceController');
 const { protect, authorize } = require('../middleware/auth');
 
@@ -22,6 +23,7 @@ router.get('/status', getAttendanceStatus);
 router.get('/my-attendance', getMyAttendance);
 router.get('/today-shifts', getTodayShiftsStatus);
 router.get('/', authorize('admin'), getAllAttendance);
+router.put('/:id/time', authorize('admin'), updateAttendanceTime);
 router.get('/summary', authorize('admin'), getAttendanceSummary);
 router.get('/with-permissions', getAttendanceWithPermissions);
 
