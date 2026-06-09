@@ -16,6 +16,15 @@ const resolveModel = (req, name, defaultSchema) => {
   return mongoose.model(name, schema);
 };
 
+const calculateWorkingHours = (attendance) => {
+  if (!attendance?.checkIn || !attendance?.checkOut) return 0;
+  const checkIn = new Date(attendance.checkIn);
+  const checkOut = new Date(attendance.checkOut);
+  const diffMs = checkOut.getTime() - checkIn.getTime();
+  if (!Number.isFinite(diffMs) || diffMs <= 0) return 0;
+  return Number((diffMs / (1000 * 60 * 60)).toFixed(2));
+};
+
 // @desc    Get admin dashboard stats
 // @route   GET /api/dashboard/admin
 // @access  Private/Admin
@@ -183,7 +192,7 @@ exports.getEmployeeDashboard = async (req, res) => {
 
     const presentDays = monthlyAttendance.filter(a => presentLikeStatuses.includes(a.status)).length;
     const halfDays = monthlyAttendance.filter(a => a.status === 'half-day').length;
-    const totalWorkingHours = monthlyAttendance.reduce((sum, a) => sum + (Number(a.workingHours) || 0), 0);
+    const totalWorkingHours = monthlyAttendance.reduce((sum, a) => sum + calculateWorkingHours(a), 0);
     const workedEntries = monthlyAttendance.filter(a => workedStatuses.includes(a.status) || (a.checkIn && a.checkOut));
     const averageHours = workedEntries.length > 0 ? totalWorkingHours / workedEntries.length : 0;
 
@@ -232,7 +241,7 @@ exports.getEmployeeDashboard = async (req, res) => {
         isActiveShift: Boolean(todaysAttendance.checkIn && !todaysAttendance.checkOut),
         todayAttendanceCount: todayAttendanceRecords.length,
         status: todaysAttendance.status,
-        workingHours: todaysAttendance.workingHours || 0,
+        workingHours: calculateWorkingHours(todaysAttendance),
         checkInPlace: todaysAttendance.checkInPlace,
         checkOutPlace: todaysAttendance.checkOutPlace,
         isLateCheckIn: todaysAttendance.isLateCheckIn,

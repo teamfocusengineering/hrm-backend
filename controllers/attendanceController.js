@@ -16,12 +16,22 @@ const openAttendanceFilter = (employeeId) => ({
 });
 
 const hasRecordedCheckout = (record) => record?.checkOut !== undefined && record?.checkOut !== null && record?.checkOut !== '';
+const MAX_ACTIVE_SESSION_HOURS = 24;
 
 const calculateWorkingHours = (attendance) => {
   if (!attendance?.checkIn || !attendance?.checkOut) return 0;
   const checkIn = new Date(attendance.checkIn);
   const checkOut = new Date(attendance.checkOut);
   const diffMs = checkOut.getTime() - checkIn.getTime();
+  if (!Number.isFinite(diffMs) || diffMs <= 0) return 0;
+  return Number((diffMs / (1000 * 60 * 60)).toFixed(2));
+};
+
+const calculateElapsedHours = (checkInValue, endValue = new Date()) => {
+  if (!checkInValue) return 0;
+  const checkIn = new Date(checkInValue);
+  const end = new Date(endValue);
+  const diffMs = end.getTime() - checkIn.getTime();
   if (!Number.isFinite(diffMs) || diffMs <= 0) return 0;
   return Number((diffMs / (1000 * 60 * 60)).toFixed(2));
 };
@@ -44,8 +54,8 @@ const normalizeAttendanceSession = (attendanceRecord) => {
     : null;
 
   const workingHours = hasRecordedCheckout(attendance)
-    ? Number(attendance.workingHours || calculateWorkingHours(attendance) || 0)
-    : Number(attendance.workingHours || 0);
+    ? calculateWorkingHours(attendance)
+    : calculateElapsedHours(attendance.checkIn);
 
   return {
     ...attendance,
@@ -58,9 +68,12 @@ const normalizeAttendanceSession = (attendanceRecord) => {
 };
 
 const buildActiveAttendanceStatus = async (Attendance, Shift, employeeId) => {
-  const activeAttendance = await Attendance.findOne(openAttendanceFilter(employeeId))
+  const activeAttendanceRecord = await Attendance.findOne(openAttendanceFilter(employeeId))
     .populate('shift', 'name displayName startTime endTime isNightShift')
     .sort({ checkIn: -1, createdAt: -1 });
+  const activeAttendance = activeAttendanceRecord && calculateElapsedHours(activeAttendanceRecord.checkIn) <= MAX_ACTIVE_SESSION_HOURS
+    ? activeAttendanceRecord
+    : null;
 
   const now = moment();
   const todayStart = moment(now).startOf('day');
