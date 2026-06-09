@@ -4,7 +4,7 @@ const escapeRegex = (value) => {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 };
 
-const getTenantId = (req) => req.tenant?._id;
+const getTenantId = (req) => req.tenant?._id || req.user?.tenant;
 
 const handleLocationError = (res, error, fallbackMessage) => {
   if (error?.code === 11000) {

@@ -127,18 +127,18 @@ exports.getEmployeeDashboard = async (req, res) => {
     const LeaveModel = resolveModel(req, 'Leave', DefaultLeave);
     const PayrollModel = resolveModel(req, 'Payroll', DefaultPayroll);
     const ShiftModel = resolveModel(req, 'Shift', DefaultShift);
-    const EmployeeModel = resolveModel(req, 'Employee', DefaultEmployee);
 
     // ✅ Get today's attendance (without shift filter first)
     const today = moment().startOf('day');
     const todayEnd = moment(today).endOf('day');
+    const yesterday = moment(today).subtract(1, 'day');
     
     const todayAttendanceRecords = await AttendanceModel.find({
       employee: employeeId,
       $or: [
         {
           date: {
-            $gte: today.toDate(),
+            $gte: yesterday.toDate(),
             $lte: todayEnd.toDate()
           }
         },
@@ -152,8 +152,14 @@ exports.getEmployeeDashboard = async (req, res) => {
       ]
     }).sort({ checkIn: -1, createdAt: -1 });
 
-    const activeAttendance = todayAttendanceRecords.find(record => record.checkIn && !record.checkOut);
-    const todaysAttendance = activeAttendance || todayAttendanceRecords[0] || null;
+    const hasRecordedCheckout = (record) => record?.checkOut !== undefined && record?.checkOut !== null && record?.checkOut !== '';
+    const activeAttendance = todayAttendanceRecords.find(record =>
+      record.checkIn &&
+      !hasRecordedCheckout(record)
+    );
+    const todaysAttendance = activeAttendance
+      || todayAttendanceRecords[0]
+      || null;
 
     const attendanceShift = todaysAttendance?.shift
       ? await ShiftModel.findById(todaysAttendance.shift)
@@ -161,13 +167,7 @@ exports.getEmployeeDashboard = async (req, res) => {
 
     // ✅ If no attendance found, return null
     // ✅ Get employee with shift info for today
-    const employee = await EmployeeModel.findById(employeeId);
-    let todaysShift = null;
-    
-    if (employee) {
-      const shiftResult = await employee.getEffectiveShift({ Shift: ShiftModel });
-      todaysShift = shiftResult.shift;
-    }
+    const todaysShift = null;
 
     // ✅ Monthly attendance summary
     const startDate = moment().startOf('month').toDate();

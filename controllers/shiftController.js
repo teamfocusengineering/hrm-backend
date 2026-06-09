@@ -657,18 +657,14 @@ exports.getMyShift = async (req, res) => {
     const now = new Date();
 
     let shiftStatus = null;
-    let canCheckIn = false;
-    let canCheckOut = false;
+    let canCheckIn = true;
+    let canCheckOut = true;
 
     if (result.shift) {
-      const checkInStatus = result.shift.getShiftStatus(now, 'checkin');
-      const checkOutStatus = result.shift.getShiftStatus(now, 'checkout');
       shiftStatus = {
-        checkIn: checkInStatus,
-        checkOut: checkOutStatus
+        checkIn: { canCheckIn: true, message: 'No shift time restrictions' },
+        checkOut: { canCheckOut: true, message: 'No shift time restrictions' }
       };
-      canCheckIn = checkInStatus.canCheckIn;
-      canCheckOut = checkOutStatus.canCheckOut;
     }
 
     res.json({
@@ -739,6 +735,7 @@ exports.getMyShiftsToday = async (req, res) => {
 
     const today = moment().startOf('day').toDate();
     const todayEnd = moment().endOf('day').toDate();
+    const yesterday = moment(today).subtract(1, 'day').toDate();
 
     let todayAttendances;
     try {
@@ -750,7 +747,7 @@ exports.getMyShiftsToday = async (req, res) => {
         $or: [
           {
             date: {
-              $gte: today,
+              $gte: yesterday,
               $lte: todayEnd
             }
           },
@@ -762,7 +759,7 @@ exports.getMyShiftsToday = async (req, res) => {
             ]
           }
         ]
-      }).select('shift checkIn checkOut workingHours').lean();
+      }).select('shift date checkIn checkOut workingHours').lean();
     } catch (err) {
       console.error('getMyShiftsToday: Attendance.find failed', {
         ...ctx,
@@ -772,12 +769,10 @@ exports.getMyShiftsToday = async (req, res) => {
       throw err;
     }
 
-    const attendanceByShift = new Map(
-      (todayAttendances || [])
-        .filter(a => a?.shift)
-        .map(a => [a.shift.toString(), a])
-    );
-    const hasActiveAttendance = (todayAttendances || []).some(a => a?.checkIn && !a?.checkOut);
+    const hasRecordedCheckout = (record) => record?.checkOut !== undefined && record?.checkOut !== null && record?.checkOut !== '';
+    const activeAttendance = (todayAttendances || [])
+      .filter(a => a?.checkIn && !hasRecordedCheckout(a))
+      .sort((a, b) => new Date(b.checkIn) - new Date(a.checkIn))[0] || null;
 
     let applicableShifts;
     try {
@@ -785,12 +780,7 @@ exports.getMyShiftsToday = async (req, res) => {
       // (Tenant scoping is enforced via tenant:req.tenant._id)
       applicableShifts = await Shift.find({
         tenant: req.tenant._id,
-        isActive: true,
-        $or: [
-          { assignedDepartments: { $in: [employee.department] } },
-          { assignedRoles: { $in: [employee.position] } },
-          { assignedEmployees: employee._id }
-        ]
+        isActive: true
       }).sort({ startTime: 1 });
     } catch (err) {
       console.error('getMyShiftsToday: Shift.find failed', { ...ctx, error: err?.message, stack: err?.stack });
@@ -799,13 +789,8 @@ exports.getMyShiftsToday = async (req, res) => {
 
     const todayShifts = (applicableShifts || []).map((shift) => {
       const shiftIdStr = shift?._id?.toString?.() || String(shift?._id);
-      const attendance = attendanceByShift.get(shiftIdStr);
-      const checkInStatus = shift.getShiftStatus(new Date(), 'checkin');
-      const status = attendance?.checkOut
-        ? 'completed'
-        : attendance?.checkIn
-          ? 'checked_in'
-          : 'pending';
+      const attendance = activeAttendance?.shift?.toString() === shiftIdStr ? activeAttendance : null;
+      const status = attendance ? 'checked_in' : 'pending';
 
       return {
         ...shift.toObject(),
@@ -813,23 +798,23 @@ exports.getMyShiftsToday = async (req, res) => {
         checkIn: attendance?.checkIn || null,
         checkOut: attendance?.checkOut || null,
         workingHours: attendance?.workingHours || 0,
-        canCheckIn: !hasActiveAttendance && status === 'pending' && checkInStatus.canCheckIn,
+        canCheckIn: !activeAttendance && status === 'pending',
         canCheckOut: status === 'checked_in',
-        checkInWindow: checkInStatus,
+        checkInWindow: { canCheckIn: !activeAttendance, message: 'No shift time restrictions' },
       };
     });
 
     console.log('getMyShiftsToday: success', {
       ...ctx,
       todayShiftsCount: todayShifts.length,
-      completedTodayCount: todayShifts.filter(s => s.status === 'completed').length
+      completedTodayCount: (todayAttendances || []).filter(hasRecordedCheckout).length
     });
 
     res.json({
       success: true,
       data: {
         todayShifts,
-        completedToday: todayShifts.filter(s => s.status === 'completed').length,
+        completedToday: (todayAttendances || []).filter(hasRecordedCheckout).length,
         totalApplicable: applicableShifts.length,
         nextShift: todayShifts.find(s => s.status === 'pending' && s.canCheckIn) || null
       }

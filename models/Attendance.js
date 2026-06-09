@@ -172,7 +172,10 @@ attendanceSchema.pre('save', function(next) {
   next();
 });
 
-// Compound index to ensure one attendance per employee per day per shift (allows multiple shifts/day)
-attendanceSchema.index({ employee: 1, date: 1, shift: 1 }, { unique: true });
+attendanceSchema.index({ employee: 1, date: 1, shift: 1 });
+attendanceSchema.index(
+  { employee: 1, checkIn: -1 },
+  { partialFilterExpression: { checkOut: null } }
+);
 
 module.exports = attendanceSchema;
