@@ -631,6 +631,145 @@ exports.updateAttendanceTime = async (req, res) => {
   }
 };
 
+// @desc    Create attendance entry from admin report calendar (Tenant Admin with permission)
+// @route   POST /api/attendance/admin-create
+// @access  Private/Admin
+exports.createAdminAttendanceEntry = async (req, res) => {
+  try {
+    const { Attendance, Employee } = req.models;
+
+    if (req.user.role !== 'admin' || !req.user.canEditAttendanceTime) {
+      return res.status(403).json({ message: 'You do not have permission to create attendance entries.' });
+    }
+
+    const { employeeId, checkIn, checkOut, reason, status, dayType, shiftId, locationId } = req.body || {};
+
+    if (!employeeId || !mongoose.isValidObjectId(employeeId)) {
+      return res.status(400).json({ message: 'Please select a valid employee.' });
+    }
+
+    if (!checkIn) {
+      return res.status(400).json({ message: 'Check-in time is required.' });
+    }
+
+    const employee = await Employee.findById(employeeId);
+    if (!employee) {
+      return res.status(404).json({ message: 'Employee not found.' });
+    }
+
+    const employeeTenant = employee.tenant ? employee.tenant.toString() : null;
+    const requestTenant = req.tenant?._id?.toString();
+    if (employeeTenant && requestTenant && employeeTenant !== requestTenant) {
+      return res.status(403).json({ message: 'Access denied for this tenant' });
+    }
+
+    const newCheckIn = new Date(checkIn);
+    if (Number.isNaN(newCheckIn.getTime())) {
+      return res.status(400).json({ message: 'Invalid check-in time.' });
+    }
+
+    let newCheckOut = null;
+    if (checkOut !== undefined && checkOut !== null && String(checkOut).trim() !== '') {
+      newCheckOut = new Date(checkOut);
+      if (Number.isNaN(newCheckOut.getTime())) {
+        return res.status(400).json({ message: 'Invalid checkout time.' });
+      }
+
+      if (newCheckOut <= newCheckIn) {
+        return res.status(400).json({ message: 'Checkout time must be after check-in time.' });
+      }
+    }
+
+    const requestedStatus = status === 'absent'
+      ? 'absent'
+      : (dayType === 'half-day' ? 'half-day' : 'present');
+
+    let selectedShift = null;
+    if (shiftId) {
+      if (!mongoose.isValidObjectId(shiftId)) {
+        return res.status(400).json({ message: 'Invalid shift.' });
+      }
+
+      selectedShift = await req.models.Shift.findOne({
+        _id: shiftId,
+        tenant: req.tenant._id,
+        isActive: true
+      });
+
+      if (!selectedShift) {
+        return res.status(404).json({ message: 'Shift not found.' });
+      }
+    }
+
+    if (locationId && !mongoose.isValidObjectId(locationId)) {
+      return res.status(400).json({ message: 'Invalid location.' });
+    }
+
+    const newLocationName = await resolveLocationName(locationId);
+    const workingHours = requestedStatus === 'absent'
+      ? 0
+      : (newCheckOut ? calculateWorkingHours({ checkIn: newCheckIn, checkOut: newCheckOut }) : 0);
+
+    const attendance = await Attendance.create({
+      employee: employeeId,
+      date: moment(newCheckIn).startOf('day').toDate(),
+      checkIn: newCheckIn,
+      checkOut: newCheckOut,
+      workingHours,
+      adjustedHours: workingHours,
+      status: requestedStatus,
+      shift: selectedShift ? selectedShift._id : null,
+      shiftSource: selectedShift ? 'requested' : null,
+      shiftName: selectedShift ? selectedShift.displayName : null,
+      checkInLocation: locationId || null,
+      attendanceTimeEditAudit: [{
+        editedBy: req.user._id,
+        editedByName: req.user.employee?.name || '',
+        editedByEmail: req.user.email || req.user.employee?.email || '',
+        oldCheckIn: null,
+        oldCheckOut: null,
+        newCheckIn,
+        newCheckOut,
+        oldStatus: '',
+        newStatus: requestedStatus,
+        oldShiftName: '',
+        newShiftName: selectedShift ? selectedShift.displayName : '',
+        oldLocationName: '',
+        newLocationName,
+        oldWorkingHours: 0,
+        newWorkingHours: workingHours,
+        editedAt: new Date(),
+        reason: reason ? String(reason).trim() : 'Created by admin'
+      }]
+    });
+
+    if (requestedStatus === 'absent' || requestedStatus === 'half-day' || requestedStatus === 'present') {
+      await Attendance.updateOne(
+        { _id: attendance._id },
+        {
+          $set: {
+            status: requestedStatus,
+            workingHours,
+            adjustedHours: workingHours
+          }
+        }
+      );
+      attendance.status = requestedStatus;
+      attendance.workingHours = workingHours;
+      attendance.adjustedHours = workingHours;
+    }
+
+    await attendance.populate('employee', 'name email department position');
+    await attendance.populate('shift', 'name displayName startTime endTime isNightShift');
+
+    const [populated] = await populateLocations([attendance]);
+    res.status(201).json(populated || attendance);
+  } catch (error) {
+    console.error('Create admin attendance entry error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
 // @desc    Get attendance summary
 // @route   GET /api/attendance/summary
 // @access  Private/Admin
