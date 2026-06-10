@@ -438,6 +438,65 @@ const resolveLocationName = async (locationId, models = {}) => {
   }
 };
 
+const applyAttendanceEditValues = async ({
+  attendance,
+  req,
+  newCheckIn,
+  newCheckOut,
+  attendanceDate,
+  requestedStatus,
+  selectedShift,
+  locationId,
+  reason,
+  defaultReason = ''
+}) => {
+  const newShiftId = selectedShift ? selectedShift._id : null;
+  const newShiftName = selectedShift ? (selectedShift.displayName || selectedShift.name) : '';
+  const newLocationName = await resolveLocationName(locationId, req.models);
+  const oldCheckIn = attendance.checkIn || null;
+  const oldCheckOut = attendance.checkOut || null;
+  const oldStatus = attendance.status || '';
+  const oldShiftName = attendance.shiftName || attendance.shift?.displayName || attendance.shift?.name || '';
+  const oldLocationName = await resolveLocationName(attendance.checkInLocation, req.models);
+  const oldWorkingHours = Number(attendance.workingHours || 0);
+  const workingHours = requestedStatus === 'absent'
+    ? 0
+    : (newCheckOut ? calculateWorkingHours({ checkIn: newCheckIn, checkOut: newCheckOut }) : 0);
+
+  attendance.checkIn = newCheckIn;
+  attendance.checkOut = newCheckOut;
+  attendance.date = attendanceDate;
+  attendance.workingHours = workingHours;
+  attendance.adjustedHours = workingHours;
+  attendance.status = requestedStatus;
+  attendance.shift = newShiftId;
+  attendance.shiftSource = selectedShift ? 'requested' : null;
+  attendance.shiftName = selectedShift ? newShiftName : null;
+  attendance.checkInLocation = locationId || null;
+  attendance.attendanceTimeEditAudit = attendance.attendanceTimeEditAudit || [];
+  attendance.attendanceTimeEditAudit.push({
+    editedBy: req.user._id,
+    editedByName: req.user.employee?.name || '',
+    editedByEmail: req.user.email || req.user.employee?.email || '',
+    oldCheckIn,
+    oldCheckOut,
+    newCheckIn,
+    newCheckOut,
+    oldStatus,
+    newStatus: requestedStatus,
+    oldShiftName,
+    newShiftName,
+    oldLocationName,
+    newLocationName,
+    oldWorkingHours,
+    newWorkingHours: workingHours,
+    editedAt: new Date(),
+    reason: reason ? String(reason).trim() : defaultReason
+  });
+
+  return workingHours;
+};
+
 // @desc    Get employee's attendance
 // @route   GET /api/attendance/my-attendance
 // @access  Private
@@ -607,7 +666,6 @@ exports.updateAttendanceTime = async (req, res) => {
     if (locationId && !mongoose.isValidObjectId(locationId)) {
       return res.status(400).json({ message: 'Invalid location.' });
     }
-    const newLocationName = await resolveLocationName(locationId, req.models);
     const newAttendanceDate = moment(newCheckIn).startOf('day').toDate();
     const newShiftId = selectedShift ? selectedShift._id : null;
     const duplicateAttendance = await Attendance.findOne({
@@ -621,50 +679,24 @@ exports.updateAttendanceTime = async (req, res) => {
       attendance = duplicateAttendance;
     }
 
-    const oldCheckIn = attendance.checkIn || null;
-    const oldCheckOut = attendance.checkOut || null;
-    const oldStatus = attendance.status || '';
-    const oldShiftName = attendance.shiftName || attendance.shift?.displayName || attendance.shift?.name || '';
-    const oldLocationName = await resolveLocationName(attendance.checkInLocation, req.models);
-    const oldWorkingHours = Number(attendance.workingHours || 0);
-
-    attendance.checkIn = newCheckIn;
-    attendance.checkOut = newCheckOut;
-    attendance.date = newAttendanceDate;
-    attendance.workingHours = requestedStatus === 'absent' ? 0 : (newCheckOut ? calculateWorkingHours({ checkIn: newCheckIn, checkOut: newCheckOut }) : 0);
-    attendance.adjustedHours = attendance.workingHours;
-    attendance.status = requestedStatus;
-    attendance.shift = newShiftId;
-    attendance.shiftSource = selectedShift ? 'requested' : null;
-    attendance.shiftName = selectedShift ? (selectedShift.displayName || selectedShift.name) : null;
-    attendance.checkInLocation = locationId || null;
-    attendance.attendanceTimeEditAudit = attendance.attendanceTimeEditAudit || [];
-    attendance.attendanceTimeEditAudit.push({
-      editedBy: req.user._id,
-      editedByName: req.user.employee?.name || '',
-      editedByEmail: req.user.email || req.user.employee?.email || '',
-      oldCheckIn,
-      oldCheckOut,
+    const workingHours = await applyAttendanceEditValues({
+      attendance,
+      req,
       newCheckIn,
       newCheckOut,
-      oldStatus,
-      newStatus: requestedStatus,
-      oldShiftName,
-      newShiftName: selectedShift ? (selectedShift.displayName || selectedShift.name) : '',
-      oldLocationName,
-      newLocationName,
-      oldWorkingHours,
-      newWorkingHours: attendance.workingHours,
-      editedAt: new Date(),
-      reason: reason ? String(reason).trim() : ''
+      attendanceDate: newAttendanceDate,
+      requestedStatus,
+      selectedShift,
+      locationId,
+      reason
     });
 
     await attendance.save();
 
     if (requestedStatus === 'absent' || requestedStatus === 'half-day' || requestedStatus === 'present') {
       attendance.status = requestedStatus;
-      attendance.workingHours = requestedStatus === 'absent' ? 0 : attendance.workingHours;
-      attendance.adjustedHours = requestedStatus === 'absent' ? 0 : attendance.adjustedHours;
+      attendance.workingHours = workingHours;
+      attendance.adjustedHours = workingHours;
       await Attendance.updateOne(
         { _id: attendance._id },
         {
@@ -778,42 +810,17 @@ exports.createAdminAttendanceEntry = async (req, res) => {
       : (newCheckOut ? calculateWorkingHours({ checkIn: newCheckIn, checkOut: newCheckOut }) : 0);
 
     if (duplicateAttendance) {
-      const oldCheckIn = duplicateAttendance.checkIn || null;
-      const oldCheckOut = duplicateAttendance.checkOut || null;
-      const oldStatus = duplicateAttendance.status || '';
-      const oldShiftName = duplicateAttendance.shiftName || duplicateAttendance.shift?.displayName || duplicateAttendance.shift?.name || '';
-      const oldLocationName = await resolveLocationName(duplicateAttendance.checkInLocation, req.models);
-      const oldWorkingHours = Number(duplicateAttendance.workingHours || 0);
-
-      duplicateAttendance.checkIn = newCheckIn;
-      duplicateAttendance.checkOut = newCheckOut;
-      duplicateAttendance.date = attendanceDate;
-      duplicateAttendance.workingHours = workingHours;
-      duplicateAttendance.adjustedHours = workingHours;
-      duplicateAttendance.status = requestedStatus;
-      duplicateAttendance.shift = selectedShiftId;
-      duplicateAttendance.shiftSource = selectedShift ? 'requested' : null;
-      duplicateAttendance.shiftName = selectedShift ? (selectedShift.displayName || selectedShift.name) : null;
-      duplicateAttendance.checkInLocation = locationId || null;
-      duplicateAttendance.attendanceTimeEditAudit = duplicateAttendance.attendanceTimeEditAudit || [];
-      duplicateAttendance.attendanceTimeEditAudit.push({
-        editedBy: req.user._id,
-        editedByName: req.user.employee?.name || '',
-        editedByEmail: req.user.email || req.user.employee?.email || '',
-        oldCheckIn,
-        oldCheckOut,
+      const updatedWorkingHours = await applyAttendanceEditValues({
+        attendance: duplicateAttendance,
+        req,
         newCheckIn,
         newCheckOut,
-        oldStatus,
-        newStatus: requestedStatus,
-        oldShiftName,
-        newShiftName: selectedShift ? (selectedShift.displayName || selectedShift.name) : '',
-        oldLocationName,
-        newLocationName,
-        oldWorkingHours,
-        newWorkingHours: workingHours,
-        editedAt: new Date(),
-        reason: reason ? String(reason).trim() : 'Updated existing attendance by admin'
+        attendanceDate,
+        requestedStatus,
+        selectedShift,
+        locationId,
+        reason,
+        defaultReason: 'Updated existing attendance by admin'
       });
 
       await duplicateAttendance.save();
@@ -822,14 +829,14 @@ exports.createAdminAttendanceEntry = async (req, res) => {
         {
           $set: {
             status: requestedStatus,
-            workingHours,
-            adjustedHours: workingHours
+            workingHours: updatedWorkingHours,
+            adjustedHours: updatedWorkingHours
           }
         }
       );
       duplicateAttendance.status = requestedStatus;
-      duplicateAttendance.workingHours = workingHours;
-      duplicateAttendance.adjustedHours = workingHours;
+      duplicateAttendance.workingHours = updatedWorkingHours;
+      duplicateAttendance.adjustedHours = updatedWorkingHours;
 
       await duplicateAttendance.populate('employee', 'name email department position');
       await duplicateAttendance.populate('shift', 'name displayName startTime endTime isNightShift');
