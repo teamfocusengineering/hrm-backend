@@ -38,6 +38,18 @@ const calculateElapsedHours = (checkInValue, endValue = new Date()) => {
   return Number((diffMs / (1000 * 60 * 60)).toFixed(2));
 };
 
+const DUPLICATE_ATTENDANCE_MESSAGE = 'Attendance already exists for this employee, date, and shift.';
+
+const isDuplicateAttendanceKeyError = (error) => (
+  error?.code === 11000
+  && (
+    error?.keyPattern?.employee
+    || error?.keyPattern?.date
+    || error?.keyPattern?.shift
+    || error?.errmsg?.includes('employee_1_date_1_shift_1')
+  )
+);
+
 const isActiveAttendanceSession = (record) => (
   Boolean(record?.checkIn)
   && !hasRecordedCheckout(record)
@@ -553,7 +565,7 @@ exports.updateAttendanceTime = async (req, res) => {
       return res.status(400).json({ message: 'Invalid attendance record.' });
     }
 
-    const attendance = await Attendance.findById(req.params.id).populate('employee', 'name email tenant');
+    let attendance = await Attendance.findById(req.params.id).populate('employee', 'name email tenant');
     if (!attendance) {
       return res.status(404).json({ message: 'Attendance record not found.' });
     }
@@ -571,13 +583,6 @@ exports.updateAttendanceTime = async (req, res) => {
     if (employeeTenant && requestTenant && employeeTenant !== requestTenant) {
       return res.status(403).json({ message: 'Access denied for this tenant' });
     }
-
-    const oldCheckIn = attendance.checkIn || null;
-    const oldCheckOut = attendance.checkOut || null;
-    const oldStatus = attendance.status || '';
-    const oldShiftName = attendance.shiftName || attendance.shift?.displayName || attendance.shift?.name || '';
-    const oldLocationName = await resolveLocationName(attendance.checkInLocation, req.models);
-    const oldWorkingHours = Number(attendance.workingHours || 0);
 
     const requestedStatus = status === 'absent'
       ? 'absent'
@@ -603,14 +608,33 @@ exports.updateAttendanceTime = async (req, res) => {
       return res.status(400).json({ message: 'Invalid location.' });
     }
     const newLocationName = await resolveLocationName(locationId, req.models);
+    const newAttendanceDate = moment(newCheckIn).startOf('day').toDate();
+    const newShiftId = selectedShift ? selectedShift._id : null;
+    const duplicateAttendance = await Attendance.findOne({
+      _id: { $ne: attendance._id },
+      employee: employee._id || employee,
+      date: newAttendanceDate,
+      shift: newShiftId
+    });
+
+    if (duplicateAttendance) {
+      attendance = duplicateAttendance;
+    }
+
+    const oldCheckIn = attendance.checkIn || null;
+    const oldCheckOut = attendance.checkOut || null;
+    const oldStatus = attendance.status || '';
+    const oldShiftName = attendance.shiftName || attendance.shift?.displayName || attendance.shift?.name || '';
+    const oldLocationName = await resolveLocationName(attendance.checkInLocation, req.models);
+    const oldWorkingHours = Number(attendance.workingHours || 0);
 
     attendance.checkIn = newCheckIn;
     attendance.checkOut = newCheckOut;
-    attendance.date = moment(newCheckIn).startOf('day').toDate();
+    attendance.date = newAttendanceDate;
     attendance.workingHours = requestedStatus === 'absent' ? 0 : (newCheckOut ? calculateWorkingHours({ checkIn: newCheckIn, checkOut: newCheckOut }) : 0);
     attendance.adjustedHours = attendance.workingHours;
     attendance.status = requestedStatus;
-    attendance.shift = selectedShift ? selectedShift._id : null;
+    attendance.shift = newShiftId;
     attendance.shiftSource = selectedShift ? 'requested' : null;
     attendance.shiftName = selectedShift ? (selectedShift.displayName || selectedShift.name) : null;
     attendance.checkInLocation = locationId || null;
@@ -659,6 +683,9 @@ exports.updateAttendanceTime = async (req, res) => {
     res.json(populated || attendance);
   } catch (error) {
     console.error('Update attendance time error:', error);
+    if (isDuplicateAttendanceKeyError(error)) {
+      return res.status(409).json({ message: DUPLICATE_ATTENDANCE_MESSAGE });
+    }
     res.status(500).json({ message: 'Server error' });
   }
 };
@@ -738,19 +765,88 @@ exports.createAdminAttendanceEntry = async (req, res) => {
     }
 
     const newLocationName = await resolveLocationName(locationId, req.models);
+    const attendanceDate = moment(newCheckIn).startOf('day').toDate();
+    const selectedShiftId = selectedShift ? selectedShift._id : null;
+    const duplicateAttendance = await Attendance.findOne({
+      employee: employeeId,
+      date: attendanceDate,
+      shift: selectedShiftId
+    });
+
     const workingHours = requestedStatus === 'absent'
       ? 0
       : (newCheckOut ? calculateWorkingHours({ checkIn: newCheckIn, checkOut: newCheckOut }) : 0);
 
+    if (duplicateAttendance) {
+      const oldCheckIn = duplicateAttendance.checkIn || null;
+      const oldCheckOut = duplicateAttendance.checkOut || null;
+      const oldStatus = duplicateAttendance.status || '';
+      const oldShiftName = duplicateAttendance.shiftName || duplicateAttendance.shift?.displayName || duplicateAttendance.shift?.name || '';
+      const oldLocationName = await resolveLocationName(duplicateAttendance.checkInLocation, req.models);
+      const oldWorkingHours = Number(duplicateAttendance.workingHours || 0);
+
+      duplicateAttendance.checkIn = newCheckIn;
+      duplicateAttendance.checkOut = newCheckOut;
+      duplicateAttendance.date = attendanceDate;
+      duplicateAttendance.workingHours = workingHours;
+      duplicateAttendance.adjustedHours = workingHours;
+      duplicateAttendance.status = requestedStatus;
+      duplicateAttendance.shift = selectedShiftId;
+      duplicateAttendance.shiftSource = selectedShift ? 'requested' : null;
+      duplicateAttendance.shiftName = selectedShift ? (selectedShift.displayName || selectedShift.name) : null;
+      duplicateAttendance.checkInLocation = locationId || null;
+      duplicateAttendance.attendanceTimeEditAudit = duplicateAttendance.attendanceTimeEditAudit || [];
+      duplicateAttendance.attendanceTimeEditAudit.push({
+        editedBy: req.user._id,
+        editedByName: req.user.employee?.name || '',
+        editedByEmail: req.user.email || req.user.employee?.email || '',
+        oldCheckIn,
+        oldCheckOut,
+        newCheckIn,
+        newCheckOut,
+        oldStatus,
+        newStatus: requestedStatus,
+        oldShiftName,
+        newShiftName: selectedShift ? (selectedShift.displayName || selectedShift.name) : '',
+        oldLocationName,
+        newLocationName,
+        oldWorkingHours,
+        newWorkingHours: workingHours,
+        editedAt: new Date(),
+        reason: reason ? String(reason).trim() : 'Updated existing attendance by admin'
+      });
+
+      await duplicateAttendance.save();
+      await Attendance.updateOne(
+        { _id: duplicateAttendance._id },
+        {
+          $set: {
+            status: requestedStatus,
+            workingHours,
+            adjustedHours: workingHours
+          }
+        }
+      );
+      duplicateAttendance.status = requestedStatus;
+      duplicateAttendance.workingHours = workingHours;
+      duplicateAttendance.adjustedHours = workingHours;
+
+      await duplicateAttendance.populate('employee', 'name email department position');
+      await duplicateAttendance.populate('shift', 'name displayName startTime endTime isNightShift');
+
+      const [populated] = await populateLocations([duplicateAttendance], req.models);
+      return res.json(populated || duplicateAttendance);
+    }
+
     const attendance = await Attendance.create({
       employee: employeeId,
-      date: moment(newCheckIn).startOf('day').toDate(),
+      date: attendanceDate,
       checkIn: newCheckIn,
       checkOut: newCheckOut,
       workingHours,
       adjustedHours: workingHours,
       status: requestedStatus,
-      shift: selectedShift ? selectedShift._id : null,
+      shift: selectedShiftId,
       shiftSource: selectedShift ? 'requested' : null,
       shiftName: selectedShift ? (selectedShift.displayName || selectedShift.name) : null,
       checkInLocation: locationId || null,
@@ -798,6 +894,9 @@ exports.createAdminAttendanceEntry = async (req, res) => {
     res.status(201).json(populated || attendance);
   } catch (error) {
     console.error('Create admin attendance entry error:', error);
+    if (isDuplicateAttendanceKeyError(error)) {
+      return res.status(409).json({ message: DUPLICATE_ATTENDANCE_MESSAGE });
+    }
     res.status(500).json({ message: 'Server error' });
   }
 };
