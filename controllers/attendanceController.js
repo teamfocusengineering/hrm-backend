@@ -6,6 +6,8 @@ const reverseGeocode = require('../utils/reverseGeocode');
 const Shift = require('../models/Shift');
 const mongoose = require('mongoose');
 
+const getEmployeeIdFromRequest = (req) => req.user?.employee?._id || req.user?.employee;
+
 const openAttendanceFilter = (employeeId) => ({
   employee: employeeId,
   checkIn: { $exists: true, $ne: null },
@@ -35,6 +37,12 @@ const calculateElapsedHours = (checkInValue, endValue = new Date()) => {
   if (!Number.isFinite(diffMs) || diffMs <= 0) return 0;
   return Number((diffMs / (1000 * 60 * 60)).toFixed(2));
 };
+
+const isActiveAttendanceSession = (record) => (
+  Boolean(record?.checkIn)
+  && !hasRecordedCheckout(record)
+  && calculateElapsedHours(record.checkIn) <= MAX_ACTIVE_SESSION_HOURS
+);
 
 const normalizeAttendanceSession = (attendanceRecord) => {
   if (!attendanceRecord) return null;
@@ -129,7 +137,7 @@ const buildActiveAttendanceStatus = async (Attendance, Shift, employeeId) => {
 exports.getAttendanceStatus = async (req, res) => {
   try {
     const { Attendance, Shift } = req.models;
-    const employeeId = req.user?.employee?._id || req.user?.employee;
+    const employeeId = getEmployeeIdFromRequest(req);
 
     if (!employeeId) {
       return res.status(400).json({ message: 'Employee profile not found' });
@@ -146,7 +154,7 @@ exports.getAttendanceStatus = async (req, res) => {
 exports.checkIn = async (req, res) => {
   try {
     const { Attendance, Employee, Shift } = req.models;
-    const employeeId = req.user?.employee?._id || req.user?.employee;
+    const employeeId = getEmployeeIdFromRequest(req);
 
     if (!employeeId) {
       return res.status(400).json({ message: 'Employee profile not found' });
@@ -177,7 +185,7 @@ exports.checkIn = async (req, res) => {
     const activeAttendance = await Attendance.findOne(openAttendanceFilter(employeeId))
       .sort({ checkIn: -1, createdAt: -1 });
 
-    if (activeAttendance) {
+    if (isActiveAttendanceSession(activeAttendance)) {
       return res.status(400).json({
         message: 'Please check out from your current attendance before checking in again.'
       });
@@ -240,15 +248,20 @@ exports.checkIn = async (req, res) => {
 exports.checkOut = async (req, res) => {
   try {
     const { Attendance, Employee, Shift, DepartmentSetting } = req.models;
+    const employeeId = getEmployeeIdFromRequest(req);
+
+    if (!employeeId) {
+      return res.status(400).json({ message: 'Employee profile not found' });
+    }
 
     // Get employee with shift
-    const employee = await Employee.findById(req.user.employee._id);
+    const employee = await Employee.findById(employeeId);
 
     // Find the latest unfinished check-in, including night shifts that crossed midnight.
     const requestedAttendanceId = req.body?.attendanceId || req.body?.activeAttendanceId;
     const attendanceQuery = requestedAttendanceId && mongoose.isValidObjectId(requestedAttendanceId)
-      ? { _id: requestedAttendanceId, employee: req.user.employee._id }
-      : openAttendanceFilter(req.user.employee._id);
+      ? { _id: requestedAttendanceId, employee: employeeId }
+      : openAttendanceFilter(employeeId);
 
     const attendance = await Attendance.findOne(attendanceQuery)
       .sort({ checkIn: -1, createdAt: -1 }); // Get latest active check-in

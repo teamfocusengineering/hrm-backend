@@ -25,6 +25,22 @@ const calculateWorkingHours = (attendance) => {
   return Number((diffMs / (1000 * 60 * 60)).toFixed(2));
 };
 
+const hasRecordedCheckout = (record) => record?.checkOut !== undefined && record?.checkOut !== null && record?.checkOut !== '';
+const calculateElapsedHours = (checkInValue, endValue = new Date()) => {
+  if (!checkInValue) return 0;
+  const checkIn = new Date(checkInValue);
+  const end = new Date(endValue);
+  const diffMs = end.getTime() - checkIn.getTime();
+  if (!Number.isFinite(diffMs) || diffMs <= 0) return 0;
+  return Number((diffMs / (1000 * 60 * 60)).toFixed(2));
+};
+const MAX_ACTIVE_SESSION_HOURS = 24;
+const isActiveAttendanceSession = (record) => (
+  Boolean(record?.checkIn)
+  && !hasRecordedCheckout(record)
+  && calculateElapsedHours(record.checkIn) <= MAX_ACTIVE_SESSION_HOURS
+);
+
 // @desc    Get admin dashboard stats
 // @route   GET /api/dashboard/admin
 // @access  Private/Admin
@@ -161,13 +177,14 @@ exports.getEmployeeDashboard = async (req, res) => {
       ]
     }).sort({ checkIn: -1, createdAt: -1 });
 
-    const hasRecordedCheckout = (record) => record?.checkOut !== undefined && record?.checkOut !== null && record?.checkOut !== '';
     const activeAttendance = todayAttendanceRecords.find(record =>
-      record.checkIn &&
-      !hasRecordedCheckout(record)
+      isActiveAttendanceSession(record)
     );
+    const currentDayAttendance = todayAttendanceRecords.find(record => (
+      moment(record.date || record.checkIn).isBetween(today, todayEnd, undefined, '[]')
+    ));
     const todaysAttendance = activeAttendance
-      || todayAttendanceRecords[0]
+      || currentDayAttendance
       || null;
 
     const attendanceShift = todaysAttendance?.shift
@@ -238,7 +255,7 @@ exports.getEmployeeDashboard = async (req, res) => {
         _id: todaysAttendance._id,
         checkIn: todaysAttendance.checkIn,
         checkOut: todaysAttendance.checkOut,
-        isActiveShift: Boolean(todaysAttendance.checkIn && !todaysAttendance.checkOut),
+        isActiveShift: isActiveAttendanceSession(todaysAttendance),
         todayAttendanceCount: todayAttendanceRecords.length,
         status: todaysAttendance.status,
         workingHours: calculateWorkingHours(todaysAttendance),

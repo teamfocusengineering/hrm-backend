@@ -770,8 +770,21 @@ exports.getMyShiftsToday = async (req, res) => {
     }
 
     const hasRecordedCheckout = (record) => record?.checkOut !== undefined && record?.checkOut !== null && record?.checkOut !== '';
+    const calculateElapsedHours = (checkInValue, endValue = new Date()) => {
+      if (!checkInValue) return 0;
+      const checkIn = new Date(checkInValue);
+      const end = new Date(endValue);
+      const diffMs = end.getTime() - checkIn.getTime();
+      if (!Number.isFinite(diffMs) || diffMs <= 0) return 0;
+      return Number((diffMs / (1000 * 60 * 60)).toFixed(2));
+    };
+    const isActiveAttendanceSession = (record) => (
+      Boolean(record?.checkIn)
+      && !hasRecordedCheckout(record)
+      && calculateElapsedHours(record.checkIn) <= 24
+    );
     const activeAttendance = (todayAttendances || [])
-      .filter(a => a?.checkIn && !hasRecordedCheckout(a))
+      .filter(isActiveAttendanceSession)
       .sort((a, b) => new Date(b.checkIn) - new Date(a.checkIn))[0] || null;
 
     let applicableShifts;
