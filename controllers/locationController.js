@@ -44,8 +44,7 @@ exports.getAllLocations = async (req, res) => {
       tenant: tenantId,
       isActive: true
     })
-      .sort({ createdAt: -1 })
-      .populate('createdBy', 'name email');
+      .sort({ createdAt: -1 });
 
     res.status(200).json({
       success: true,
@@ -68,7 +67,7 @@ exports.getLocation = async (req, res) => {
       _id: req.params.id,
       tenant: tenantId,
       isActive: true
-    }).populate('createdBy', 'name email');
+    });
 
     if (!location) {
       return res.status(404).json({
@@ -126,8 +125,6 @@ exports.createLocation = async (req, res) => {
       isActive: true
     });
 
-    await location.populate('createdBy', 'name email');
-
     res.status(201).json({
       success: true,
       message: 'Location created successfully',
@@ -183,8 +180,6 @@ exports.updateLocation = async (req, res) => {
     location.isActive = isActive !== undefined ? isActive : location.isActive;
 
     await location.save();
-    await location.populate('createdBy', 'name email');
-
     res.status(200).json({
       success: true,
       message: 'Location updated successfully',
