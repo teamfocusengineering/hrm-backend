@@ -6,6 +6,18 @@ const escapeRegex = (value) => {
 
 const getTenantId = (req) => req.tenant?._id || req.user?.tenant;
 
+const requireTenantId = (req, res) => {
+  const tenantId = getTenantId(req);
+  if (!tenantId) {
+    res.status(400).json({
+      success: false,
+      message: 'Tenant context required'
+    });
+    return null;
+  }
+  return tenantId;
+};
+
 const handleLocationError = (res, error, fallbackMessage) => {
   if (error?.code === 11000) {
     return res.status(400).json({
@@ -25,9 +37,11 @@ const handleLocationError = (res, error, fallbackMessage) => {
 exports.getAllLocations = async (req, res) => {
   try {
     const { Location } = getSuperAdminModels();
+    const tenantId = requireTenantId(req, res);
+    if (!tenantId) return;
 
     const locations = await Location.find({
-      tenant: getTenantId(req),
+      tenant: tenantId,
       isActive: true
     })
       .sort({ createdAt: -1 })
@@ -47,10 +61,12 @@ exports.getAllLocations = async (req, res) => {
 exports.getLocation = async (req, res) => {
   try {
     const { Location } = getSuperAdminModels();
+    const tenantId = requireTenantId(req, res);
+    if (!tenantId) return;
 
     const location = await Location.findOne({
       _id: req.params.id,
-      tenant: getTenantId(req),
+      tenant: tenantId,
       isActive: true
     }).populate('createdBy', 'name email');
 
@@ -74,6 +90,8 @@ exports.getLocation = async (req, res) => {
 exports.createLocation = async (req, res) => {
   try {
     const { Location } = getSuperAdminModels();
+    const tenantId = requireTenantId(req, res);
+    if (!tenantId) return;
     const { name, address, latitude, longitude, radius, description } = req.body;
 
     if (!name) {
@@ -85,7 +103,7 @@ exports.createLocation = async (req, res) => {
 
     const trimmedName = name.trim();
     const existingLocation = await Location.findOne({
-      tenant: getTenantId(req),
+      tenant: tenantId,
       name: { $regex: `^${escapeRegex(trimmedName)}$`, $options: 'i' }
     });
 
@@ -97,7 +115,7 @@ exports.createLocation = async (req, res) => {
     }
 
     const location = await Location.create({
-      tenant: getTenantId(req),
+      tenant: tenantId,
       name: trimmedName,
       address: typeof address === 'string' ? address.trim() : '',
       latitude: latitude !== undefined ? latitude : null,
@@ -124,11 +142,13 @@ exports.createLocation = async (req, res) => {
 exports.updateLocation = async (req, res) => {
   try {
     const { Location } = getSuperAdminModels();
+    const tenantId = requireTenantId(req, res);
+    if (!tenantId) return;
     const { name, address, latitude, longitude, radius, description, isActive } = req.body;
 
     const location = await Location.findOne({
       _id: req.params.id,
-      tenant: getTenantId(req)
+      tenant: tenantId
     });
 
     if (!location) {
@@ -141,7 +161,7 @@ exports.updateLocation = async (req, res) => {
     const trimmedName = name?.trim();
     if (trimmedName && trimmedName !== location.name) {
       const existingLocation = await Location.findOne({
-        tenant: getTenantId(req),
+        tenant: tenantId,
         _id: { $ne: location._id },
         name: { $regex: `^${escapeRegex(trimmedName)}$`, $options: 'i' }
       });
@@ -179,10 +199,12 @@ exports.updateLocation = async (req, res) => {
 exports.deleteLocation = async (req, res) => {
   try {
     const { Location } = getSuperAdminModels();
+    const tenantId = requireTenantId(req, res);
+    if (!tenantId) return;
 
     const location = await Location.findOne({
       _id: req.params.id,
-      tenant: getTenantId(req)
+      tenant: tenantId
     });
 
     if (!location) {

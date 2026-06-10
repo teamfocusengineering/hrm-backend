@@ -67,7 +67,9 @@ exports.detectTenant = async (req, res, next) => {
       }
     }
 
-    if (subdomain) {
+    const tenantIdentifier = subdomain || tenantId;
+
+    if (tenantIdentifier) {
       const { Tenant } = getSuperAdminModels();
 
       // Try to find tenant by subdomain or by a provided tenant identifier
@@ -75,14 +77,14 @@ exports.detectTenant = async (req, res, next) => {
       try {
         tenant = await Tenant.findOne({
           $or: [
-            { subdomain: String(subdomain).toLowerCase() },
-            { _id: subdomain }
+            { subdomain: String(tenantIdentifier).toLowerCase() },
+            { _id: tenantIdentifier }
           ],
           isActive: true
         });
       } catch (e) {
         // If subdomain value wasn't an ObjectId, fallback to searching by subdomain only
-        tenant = await Tenant.findOne({ subdomain: String(subdomain).toLowerCase(), isActive: true });
+        tenant = await Tenant.findOne({ subdomain: String(tenantIdentifier).toLowerCase(), isActive: true });
       }
 
       if (tenant) {
@@ -106,7 +108,7 @@ exports.detectTenant = async (req, res, next) => {
         // Clients (install hooks, public pages) may send stale or exploratory headers —
         // allow the request to continue without tenant context and let downstream
         // authentication/authorization decide how to handle it.
-        console.warn(`Tenant detection: subdomain provided but not found or inactive -> '${subdomain}'. Continuing without tenant context.`);
+        console.warn(`Tenant detection: tenant identifier provided but not found or inactive -> '${tenantIdentifier}'. Continuing without tenant context.`);
         // ensure no tenant properties are set on the request
         req.tenant = undefined;
         req.tenantId = undefined;

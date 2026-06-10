@@ -350,14 +350,11 @@ exports.checkOut = async (req, res) => {
   }
 };
 
-// Helper to manually populate checkInLocation and checkOutLocation from SuperAdmin DB
-const populateLocations = async (attendanceRecords) => {
+// Helper to manually populate checkInLocation and checkOutLocation across tenant/super-admin location stores.
+const populateLocations = async (attendanceRecords, models = {}) => {
   if (!attendanceRecords || attendanceRecords.length === 0) return attendanceRecords;
 
   try {
-    const { getSuperAdminModels } = require('../config/db');
-    const { Location } = getSuperAdminModels();
-
     // Extract all unique location ObjectIds
     const locationIds = new Set();
     attendanceRecords.forEach(record => {
@@ -367,10 +364,25 @@ const populateLocations = async (attendanceRecords) => {
 
     if (locationIds.size === 0) return attendanceRecords;
 
-    // Fetch locations from super-admin DB
-    const locations = await Location.find({
-      _id: { $in: Array.from(locationIds) }
-    }).select('name address');
+    const ids = Array.from(locationIds);
+    const locationModels = [];
+
+    if (models.Location) {
+      locationModels.push(models.Location);
+    }
+
+    const { getSuperAdminModels } = require('../config/db');
+    const { Location: SuperAdminLocation } = getSuperAdminModels();
+    if (SuperAdminLocation && SuperAdminLocation !== models.Location) {
+      locationModels.push(SuperAdminLocation);
+    }
+
+    const locationResults = await Promise.allSettled(
+      locationModels.map(Location => Location.find({ _id: { $in: ids } }).select('name address locationName'))
+    );
+    const locations = locationResults
+      .filter(result => result.status === 'fulfilled')
+      .flatMap(result => result.value || []);
 
     const locationMap = locations.reduce((map, loc) => {
       map[loc._id.toString()] = loc;
@@ -394,14 +406,21 @@ const populateLocations = async (attendanceRecords) => {
   }
 };
 
-const resolveLocationName = async (locationId) => {
+const resolveLocationName = async (locationId, models = {}) => {
   if (!locationId || !mongoose.isValidObjectId(locationId)) return '';
 
   try {
+    if (models.Location) {
+      const tenantLocation = await models.Location.findById(locationId).select('name address locationName');
+      if (tenantLocation) {
+        return tenantLocation.name || tenantLocation.locationName || tenantLocation.address || '';
+      }
+    }
+
     const { getSuperAdminModels } = require('../config/db');
     const { Location } = getSuperAdminModels();
-    const location = await Location.findById(locationId).select('name address');
-    return location?.name || location?.address || '';
+    const location = await Location.findById(locationId).select('name address locationName');
+    return location?.name || location?.locationName || location?.address || '';
   } catch (error) {
     return '';
   }
@@ -440,7 +459,7 @@ exports.getMyAttendance = async (req, res) => {
     })
       .sort({ date: -1 });
 
-    const populatedAttendance = await populateLocations(attendance);
+    const populatedAttendance = await populateLocations(attendance, req.models);
 
     res.json(populatedAttendance);
   } catch (error) {
@@ -488,7 +507,7 @@ exports.getAllAttendance = async (req, res) => {
       .populate('shift', 'name displayName startTime endTime isNightShift')
       .sort({ date: -1 });
 
-    const populatedAttendance = await populateLocations(attendance);
+    const populatedAttendance = await populateLocations(attendance, req.models);
 
     res.json(populatedAttendance);
   } catch (error) {
@@ -557,7 +576,7 @@ exports.updateAttendanceTime = async (req, res) => {
     const oldCheckOut = attendance.checkOut || null;
     const oldStatus = attendance.status || '';
     const oldShiftName = attendance.shiftName || attendance.shift?.displayName || attendance.shift?.name || '';
-    const oldLocationName = await resolveLocationName(attendance.checkInLocation);
+    const oldLocationName = await resolveLocationName(attendance.checkInLocation, req.models);
     const oldWorkingHours = Number(attendance.workingHours || 0);
 
     const requestedStatus = status === 'absent'
@@ -583,7 +602,7 @@ exports.updateAttendanceTime = async (req, res) => {
     if (locationId && !mongoose.isValidObjectId(locationId)) {
       return res.status(400).json({ message: 'Invalid location.' });
     }
-    const newLocationName = await resolveLocationName(locationId);
+    const newLocationName = await resolveLocationName(locationId, req.models);
 
     attendance.checkIn = newCheckIn;
     attendance.checkOut = newCheckOut;
@@ -593,7 +612,7 @@ exports.updateAttendanceTime = async (req, res) => {
     attendance.status = requestedStatus;
     attendance.shift = selectedShift ? selectedShift._id : null;
     attendance.shiftSource = selectedShift ? 'requested' : null;
-    attendance.shiftName = selectedShift ? selectedShift.displayName : null;
+    attendance.shiftName = selectedShift ? (selectedShift.displayName || selectedShift.name) : null;
     attendance.checkInLocation = locationId || null;
     attendance.attendanceTimeEditAudit = attendance.attendanceTimeEditAudit || [];
     attendance.attendanceTimeEditAudit.push({
@@ -607,7 +626,7 @@ exports.updateAttendanceTime = async (req, res) => {
       oldStatus,
       newStatus: requestedStatus,
       oldShiftName,
-      newShiftName: selectedShift ? selectedShift.displayName : '',
+      newShiftName: selectedShift ? (selectedShift.displayName || selectedShift.name) : '',
       oldLocationName,
       newLocationName,
       oldWorkingHours,
@@ -636,7 +655,7 @@ exports.updateAttendanceTime = async (req, res) => {
     await attendance.populate('employee', 'name email department position');
     await attendance.populate('shift', 'name displayName startTime endTime isNightShift');
 
-    const [populated] = await populateLocations([attendance]);
+    const [populated] = await populateLocations([attendance], req.models);
     res.json(populated || attendance);
   } catch (error) {
     console.error('Update attendance time error:', error);
@@ -718,7 +737,7 @@ exports.createAdminAttendanceEntry = async (req, res) => {
       return res.status(400).json({ message: 'Invalid location.' });
     }
 
-    const newLocationName = await resolveLocationName(locationId);
+    const newLocationName = await resolveLocationName(locationId, req.models);
     const workingHours = requestedStatus === 'absent'
       ? 0
       : (newCheckOut ? calculateWorkingHours({ checkIn: newCheckIn, checkOut: newCheckOut }) : 0);
@@ -733,7 +752,7 @@ exports.createAdminAttendanceEntry = async (req, res) => {
       status: requestedStatus,
       shift: selectedShift ? selectedShift._id : null,
       shiftSource: selectedShift ? 'requested' : null,
-      shiftName: selectedShift ? selectedShift.displayName : null,
+      shiftName: selectedShift ? (selectedShift.displayName || selectedShift.name) : null,
       checkInLocation: locationId || null,
       attendanceTimeEditAudit: [{
         editedBy: req.user._id,
@@ -746,7 +765,7 @@ exports.createAdminAttendanceEntry = async (req, res) => {
         oldStatus: '',
         newStatus: requestedStatus,
         oldShiftName: '',
-        newShiftName: selectedShift ? selectedShift.displayName : '',
+        newShiftName: selectedShift ? (selectedShift.displayName || selectedShift.name) : '',
         oldLocationName: '',
         newLocationName,
         oldWorkingHours: 0,
@@ -775,7 +794,7 @@ exports.createAdminAttendanceEntry = async (req, res) => {
     await attendance.populate('employee', 'name email department position');
     await attendance.populate('shift', 'name displayName startTime endTime isNightShift');
 
-    const [populated] = await populateLocations([attendance]);
+    const [populated] = await populateLocations([attendance], req.models);
     res.status(201).json(populated || attendance);
   } catch (error) {
     console.error('Create admin attendance entry error:', error);
