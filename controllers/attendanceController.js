@@ -722,6 +722,48 @@ exports.updateAttendanceTime = async (req, res) => {
   }
 };
 
+// @desc    Delete attendance entry (Tenant Admin with permission)
+// @route   DELETE /api/attendance/:id
+// @access  Private/Admin
+exports.deleteAttendanceEntry = async (req, res) => {
+  try {
+    const { Attendance, Employee } = req.models;
+
+    if (req.user.role !== 'admin' || !req.user.canEditAttendanceTime) {
+      return res.status(403).json({ message: 'You do not have permission to delete attendance entries.' });
+    }
+
+    if (!mongoose.isValidObjectId(req.params.id)) {
+      return res.status(400).json({ message: 'Invalid attendance record.' });
+    }
+
+    const attendance = await Attendance.findById(req.params.id).populate('employee', 'tenant');
+    if (!attendance) {
+      return res.status(404).json({ message: 'Attendance record not found.' });
+    }
+
+    const employee = attendance.employee && attendance.employee._id
+      ? attendance.employee
+      : await Employee.findById(attendance.employee).select('tenant');
+
+    if (!employee) {
+      return res.status(404).json({ message: 'Employee not found for attendance record.' });
+    }
+
+    const employeeTenant = employee.tenant ? employee.tenant.toString() : null;
+    const requestTenant = req.tenant?._id?.toString();
+    if (employeeTenant && requestTenant && employeeTenant !== requestTenant) {
+      return res.status(403).json({ message: 'Access denied for this tenant' });
+    }
+
+    await Attendance.deleteOne({ _id: attendance._id });
+    res.json({ message: 'Attendance record deleted successfully.' });
+  } catch (error) {
+    console.error('Delete attendance entry error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
 // @desc    Create attendance entry from admin report calendar (Tenant Admin with permission)
 // @route   POST /api/attendance/admin-create
 // @access  Private/Admin
