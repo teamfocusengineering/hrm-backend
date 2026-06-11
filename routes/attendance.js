@@ -10,6 +10,7 @@ const {
   getAttendanceStatus,
   getTodayShiftsStatus,
   updateAttendanceTime,
+  deleteAttendanceEntry,
   createAdminAttendanceEntry
 } = require('../controllers/attendanceController');
 const { protect, authorize } = require('../middleware/auth');
@@ -26,6 +27,7 @@ router.get('/today-shifts', getTodayShiftsStatus);
 router.post('/admin-create', authorize('admin'), createAdminAttendanceEntry);
 router.get('/', authorize('admin'), getAllAttendance);
 router.put('/:id/time', authorize('admin'), updateAttendanceTime);
+router.delete('/:id', authorize('admin'), deleteAttendanceEntry);
 router.get('/summary', authorize('admin'), getAttendanceSummary);
 router.get('/with-permissions', getAttendanceWithPermissions);
 
